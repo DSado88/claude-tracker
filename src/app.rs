@@ -178,6 +178,11 @@ impl AppState {
 
     /// Returns Some(index) on success, None on failure.
     fn add_account(&mut self, name: String, session_key: String, org_id: String) -> Option<usize> {
+        if self.accounts.iter().any(|a| a.config.name == name) {
+            self.set_status(format!("Account '{}' already exists", name));
+            return None;
+        }
+
         if let Err(e) = self.keyring.set_session_key(&name, &session_key) {
             self.set_status(format!("Keyring error: {e}"));
             return None;

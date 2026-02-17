@@ -57,7 +57,6 @@ pub fn spawn_fetch_one(
 }
 
 /// Shared fetch logic for both spawn_fetch_all and spawn_fetch_one.
-/// Uses format!("{e:#}") to preserve the full anyhow error chain across the channel boundary.
 async fn fetch_account_usage(
     account_name: &str,
     org_id: &str,
@@ -79,7 +78,23 @@ async fn fetch_account_usage(
             oauth::fetch_oauth_usage(&token).await
         }
     };
-    result.map_err(|e| format!("{e:#}"))
+    result.map_err(|e| humanize_error(&e))
+}
+
+/// Turn common API errors into short, actionable messages.
+fn humanize_error(e: &anyhow::Error) -> String {
+    let msg = format!("{e:#}");
+    if msg.contains("401") || msg.contains("403") {
+        "Expired — re-import (i)".to_string()
+    } else if msg.contains("429") {
+        "Rate limited — try later".to_string()
+    } else if msg.contains("timed out") || msg.contains("timeout") {
+        "Timeout".to_string()
+    } else if msg.contains("connect") || msg.contains("dns") || msg.contains("resolve") {
+        "No network".to_string()
+    } else {
+        msg
+    }
 }
 
 /// Import OAuth credentials from Claude Code's keychain, identify the account,

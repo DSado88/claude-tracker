@@ -2,7 +2,7 @@ use chrono::Utc;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::app::{AccountStatus, AppState};
@@ -81,8 +81,10 @@ fn format_countdown(resets_at: &chrono::DateTime<Utc>) -> String {
         format!("{}d {}h", days, hours)
     } else if hours > 0 {
         format!("{}h {:02}m", hours, mins)
+    } else if mins > 0 {
+        format!("{}m {:02}s", mins, total_secs % 60)
     } else {
-        format!("{}m", mins)
+        format!("{}s", total_secs)
     }
 }
 
@@ -239,26 +241,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
         })
         .collect();
 
-    let empty_msg = if app.accounts.is_empty() {
-        vec![Row::new(vec![Cell::from(Line::from(vec![
-            Span::styled(
-                "  No accounts configured. Press 'a' to add one.",
+    if app.accounts.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  No accounts configured. Press 'i' to import or 'a' to add one.",
                 Style::default().fg(Color::DarkGray),
-            ),
-        ]))])]
-    } else {
-        vec![]
-    };
-
-    let display_rows = if app.accounts.is_empty() {
-        empty_msg
-    } else {
-        rows
-    };
+            ))),
+            area,
+        );
+        return;
+    }
 
     let widths = [
         Constraint::Length(4),  // #
-        Constraint::Length(16), // Name
+        Constraint::Min(20),    // Name (flex for long emails)
         Constraint::Length(5),  // 5h %
         Constraint::Length(12), // 5h Bar
         Constraint::Length(9),  // 5h Reset
@@ -268,14 +264,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
         Constraint::Min(8),    // Status
     ];
 
-    let table = Table::new(display_rows, widths)
+    let table = Table::new(rows, widths)
         .header(header)
         .block(Block::default().borders(Borders::NONE));
 
     let mut state = TableState::default();
-    if !app.accounts.is_empty() {
-        state.select(Some(app.selected_index));
-    }
+    state.select(Some(app.selected_index));
 
     frame.render_stateful_widget(table, area, &mut state);
 }
