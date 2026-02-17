@@ -28,7 +28,7 @@ Built with Rust + [ratatui](https://github.com/ratatui/ratatui). Designed for pe
 - Call the profile API once at import (to identify the account)
 - Compare access tokens locally to detect which account is currently logged in
 
-This avoids any appearance of token stripping. If an access token expires, the tracker tries re-reading Claude Code's keychain (in case Claude Code refreshed it). If still expired, the cached countdown remains accurate — you just won't get updated utilization % until you use Claude Code with that account again.
+This avoids any appearance of token stripping. If an access token expires, the tracker tries re-reading Claude Code's keychain (in case Claude Code refreshed it), but **only if the refresh token matches** — preventing one account's credential from silently overwriting another's. If still expired, the cached countdown remains accurate — you just won't get updated utilization % until you use Claude Code with that account again.
 
 **What's stored where:**
 
@@ -103,7 +103,7 @@ After importing, all accounts poll independently. The refresh tokens persist in 
 | `e` | Edit account |
 | `d` / `x` | Delete account |
 | `?` | Help |
-| `q` | Quit |
+| `q` / `Ctrl+C` | Quit |
 
 ## Manual Account Setup (Session Key)
 
@@ -122,7 +122,7 @@ Note: Session keys expire when you log out of the browser. OAuth tokens (via `i`
 
 ```toml
 [settings]
-poll_interval_secs = 180
+poll_interval_secs = 180  # minimum 30, clamped on load
 active_account = 0
 
 [[accounts]]
@@ -130,6 +130,8 @@ name = "user@example.com"
 org_id = "65f10de7-..."
 auth_method = "oauth"
 ```
+
+Config writes are atomic (temp file + rename) to prevent corruption if the app crashes mid-write.
 
 ## Dependencies
 
