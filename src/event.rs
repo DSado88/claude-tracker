@@ -17,7 +17,7 @@ pub enum Event {
         result: Result<UsageData, String>,
     },
     OAuthImportResult {
-        result: Result<OAuthImportData, String>,
+        result: Result<Vec<OAuthImportData>, String>,
     },
     LoggedInDetected {
         account_name: Option<String>,

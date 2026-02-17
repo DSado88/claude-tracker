@@ -93,18 +93,31 @@ pub fn spawn_oauth_import(tx: &mpsc::UnboundedSender<Event>) {
     });
 }
 
-async fn do_oauth_import() -> anyhow::Result<crate::event::OAuthImportData> {
-    // Read Claude Code's access token from macOS Keychain
-    let access_token = oauth::read_claude_code_access_token()?;
+async fn do_oauth_import() -> anyhow::Result<Vec<crate::event::OAuthImportData>> {
+    // Read all Claude Code access tokens from macOS Keychain
+    // (default + alternate config-directory instances)
+    let tokens = oauth::read_all_claude_code_tokens()?;
 
-    // Fetch profile to identify the account (also validates the token is alive)
-    let profile = oauth::fetch_profile(&access_token).await?;
+    let mut results = Vec::new();
+    for access_token in tokens {
+        match oauth::fetch_profile(&access_token).await {
+            Ok(profile) => {
+                results.push(crate::event::OAuthImportData {
+                    name: profile.email,
+                    org_id: profile.org_id,
+                    access_token,
+                });
+            }
+            Err(_) => continue, // skip tokens with expired/invalid profiles
+        }
+    }
 
-    Ok(crate::event::OAuthImportData {
-        name: profile.email,
-        org_id: profile.org_id,
-        access_token,
-    })
+    if results.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Found tokens but none returned a valid profile. Re-authenticate in Claude Code."
+        ));
+    }
+    Ok(results)
 }
 
 /// Detect which account matches the token currently in Claude Code's keychain.
