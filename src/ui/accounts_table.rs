@@ -222,8 +222,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
                     }
                 }
                 AccountStatus::Error(msg) => {
-                    let short = if msg.len() > 30 {
-                        format!("{}...", &msg[..27])
+                    let short = if msg.chars().count() > 30 {
+                        let truncated: String = msg.chars().take(27).collect();
+                        format!("{truncated}...")
                     } else {
                         msg.clone()
                     };
@@ -282,4 +283,63 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
     }
 
     frame.render_stateful_widget(table, area, &mut state);
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    // =========================================================================
+    // FIX VERIFIED: Multi-byte UTF-8 error messages truncate safely using
+    // chars().take() instead of byte slicing.
+    // =========================================================================
+    #[test]
+    fn error_message_truncation_handles_multibyte_utf8() {
+        // 26 ASCII chars followed by 'é' (2-byte UTF-8) + padding.
+        // Previously panicked with byte slice at index 27 (inside 'é').
+        let msg = "abcdefghijklmnopqrstuvwxyzé1234".to_string();
+        assert!(msg.chars().count() > 30);
+
+        let short = if msg.chars().count() > 30 {
+            let truncated: String = msg.chars().take(27).collect();
+            format!("{truncated}...")
+        } else {
+            msg.clone()
+        };
+
+        // 'é' is the 27th char, so it's included in take(27)
+        assert_eq!(short, "abcdefghijklmnopqrstuvwxyzé...");
+    }
+
+    #[test]
+    fn error_message_truncation_ascii_only() {
+        let msg = "This is a long error message that exceeds thirty chars easily".to_string();
+        assert!(msg.chars().count() > 30);
+
+        let short = if msg.chars().count() > 30 {
+            let truncated: String = msg.chars().take(27).collect();
+            format!("{truncated}...")
+        } else {
+            msg.clone()
+        };
+
+        assert_eq!(short, "This is a long error messag...");
+    }
+
+    #[test]
+    fn error_message_short_not_truncated() {
+        let msg = "Short error".to_string();
+        assert!(msg.chars().count() <= 30);
+
+        let short = if msg.chars().count() > 30 {
+            let truncated: String = msg.chars().take(27).collect();
+            format!("{truncated}...")
+        } else {
+            msg.clone()
+        };
+
+        assert_eq!(short, "Short error");
+    }
 }

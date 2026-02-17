@@ -148,9 +148,10 @@ impl AppState {
                     account.status = AccountStatus::Error(msg);
                 }
             }
+            self.last_poll = Some(Utc::now());
         }
-        // If account was deleted while fetch was in flight, result is silently discarded.
-        self.last_poll = Some(Utc::now());
+        // If account was deleted while fetch was in flight, result and last_poll are
+        // both silently discarded — no misleading "Last refresh" in the status bar.
     }
 
     pub fn clear_stale_messages(&mut self) {
@@ -384,6 +385,7 @@ fn handle_input_key(
 ) {
     match key.code {
         KeyCode::Esc => {
+            app.input_fields.clear();
             app.mode = AppMode::Normal;
         }
         KeyCode::Tab | KeyCode::Down => {
@@ -683,6 +685,108 @@ mod tests {
             "Old key must still exist when new key write fails. \
              Calls: {:?}",
             mock.get_calls()
+        );
+    }
+
+    // =========================================================================
+    // FIX VERIFIED: Input fields cleared after edit cancel.
+    //
+    // When user presses Esc to cancel an edit, input_fields.clear() is called
+    // so credentials don't linger in heap memory.
+    // =========================================================================
+    #[test]
+    fn input_fields_cleared_on_edit_cancel() {
+        let mock = Arc::new(MockKeyring::new());
+        mock.preload("Alice", "alice-secret-key");
+        let mut app = test_app(&["Alice"], mock);
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        // User presses 'e' to edit
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+            &tx,
+        );
+        assert_eq!(app.mode, AppMode::EditAccount(0));
+        assert_eq!(
+            app.input_fields.session_key, "alice-secret-key",
+            "Session key loaded into input fields for editing"
+        );
+
+        // User presses Esc to cancel
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &tx,
+        );
+        assert_eq!(app.mode, AppMode::Normal);
+
+        // FIX: session key is cleared after cancel
+        assert!(
+            app.input_fields.session_key.is_empty(),
+            "Session key must be cleared after edit cancel"
+        );
+        assert!(
+            app.input_fields.name.is_empty(),
+            "Name must be cleared after edit cancel"
+        );
+    }
+
+    // =========================================================================
+    // FIX VERIFIED: last_poll NOT updated when result is for a deleted account.
+    //
+    // apply_usage_result only sets last_poll when the named account exists
+    // and actually receives the data. Discarded results don't affect the
+    // status bar's "Last refresh" display.
+    // =========================================================================
+    #[test]
+    fn last_poll_not_updated_when_result_discarded_for_deleted_account() {
+        let mock = Arc::new(MockKeyring::new());
+        let mut app = test_app(&["Alice"], mock);
+
+        assert!(app.last_poll.is_none(), "Precondition: no poll yet");
+
+        // Delete all accounts
+        app.accounts.clear();
+
+        // In-flight result for Alice arrives after she was deleted
+        let usage = UsageData {
+            utilization: 50,
+            resets_at: None,
+            weekly_utilization: None,
+            weekly_resets_at: None,
+        };
+        app.apply_usage_result("Alice", Ok(usage));
+
+        // FIX: last_poll is NOT set when no account received the data
+        assert!(
+            app.last_poll.is_none(),
+            "last_poll must not be updated when result was discarded"
+        );
+    }
+
+    // =========================================================================
+    // FIX VERIFIED: last_poll IS updated when result is applied to an account.
+    // =========================================================================
+    #[test]
+    fn last_poll_updated_when_result_applied_to_existing_account() {
+        let mock = Arc::new(MockKeyring::new());
+        let mut app = test_app(&["Alice"], mock);
+
+        assert!(app.last_poll.is_none());
+
+        let usage = UsageData {
+            utilization: 50,
+            resets_at: None,
+            weekly_utilization: None,
+            weekly_resets_at: None,
+        };
+        app.apply_usage_result("Alice", Ok(usage));
+
+        assert!(
+            app.last_poll.is_some(),
+            "last_poll should be updated when result is applied to an existing account"
         );
     }
 }
