@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::mpsc;
 
-use crate::config::{self, AccountConfig, Config};
-use crate::event::Event;
+use crate::config::{self, AccountConfig, AuthMethod, Config};
+use crate::event::{Event, OAuthImportData};
 use crate::keyring_store::KeyringBackend;
 use crate::swap;
 
@@ -185,6 +185,7 @@ impl AppState {
         let ac = AccountConfig {
             name,
             org_id,
+            auth_method: AuthMethod::SessionKey,
         };
         self.accounts.push(AccountState {
             config: ac,
@@ -240,29 +241,85 @@ impl AppState {
         }
     }
 
+    /// Import an OAuth account from Claude Code. If an account with the same name
+    /// already exists, update its credentials. Otherwise, add a new account.
+    /// Returns the account index on success.
+    pub fn import_oauth_account(&mut self, data: OAuthImportData) -> Option<usize> {
+        // Store the OAuth credential JSON in our keyring
+        if let Err(e) = self.keyring.set_session_key(&data.name, &data.credential_json) {
+            self.set_status(format!("Keyring error: {e}"));
+            return None;
+        }
+
+        // Check if account already exists (by name)
+        if let Some(pos) = self.accounts.iter().position(|a| a.config.name == data.name) {
+            self.accounts[pos].config.org_id = data.org_id;
+            self.accounts[pos].config.auth_method = AuthMethod::OAuth;
+            self.accounts[pos].usage = None;
+            self.accounts[pos].status = AccountStatus::Idle;
+            self.save_config();
+            self.set_status(format!("Updated OAuth account '{}'", data.name));
+            return Some(pos);
+        }
+
+        // Add new account
+        let ac = AccountConfig {
+            name: data.name.clone(),
+            org_id: data.org_id,
+            auth_method: AuthMethod::OAuth,
+        };
+        self.accounts.push(AccountState {
+            config: ac,
+            usage: None,
+            status: AccountStatus::Idle,
+            last_fetched: None,
+        });
+        self.save_config();
+        self.set_status(format!("Imported OAuth account '{}'", data.name));
+        Some(self.accounts.len() - 1)
+    }
+
     fn swap_to_selected(&mut self) {
         if self.selected_index < self.accounts.len() {
             let name = self.accounts[self.selected_index].config.name.clone();
-            let org_id = self.accounts[self.selected_index].config.org_id.clone();
+            let auth_method = self.accounts[self.selected_index].config.auth_method.clone();
 
-            match self.keyring.get_session_key(&name) {
-                Ok(session_key) => {
-                    match swap::write_active_session(&session_key, &org_id) {
+            match &auth_method {
+                AuthMethod::OAuth => {
+                    match swap::swap_claude_code_credential(
+                        self.keyring.as_ref(),
+                        &name,
+                        &auth_method,
+                    ) {
                         Ok(()) => {
                             self.active_account_index = self.selected_index;
                             self.save_config();
-                            self.set_status(format!(
-                                "Swapped to '{}'. Restart Claude CLI + resume.",
-                                name
-                            ));
+                            self.set_status(format!("Swapped to '{}' — Claude Code will use it now", name));
                         }
                         Err(e) => {
                             self.set_status(format!("Swap failed: {e}"));
                         }
                     }
                 }
-                Err(e) => {
-                    self.set_status(format!("Cannot swap - {e}"));
+                AuthMethod::SessionKey => {
+                    let org_id = self.accounts[self.selected_index].config.org_id.clone();
+                    match self.keyring.get_session_key(&name) {
+                        Ok(session_key) => {
+                            match swap::write_active_session(&session_key, &org_id) {
+                                Ok(()) => {
+                                    self.active_account_index = self.selected_index;
+                                    self.save_config();
+                                    self.set_status(format!("Swapped to '{}'", name));
+                                }
+                                Err(e) => {
+                                    self.set_status(format!("Swap failed: {e}"));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self.set_status(format!("Cannot swap - {e}"));
+                        }
+                    }
                 }
             }
         }
@@ -342,6 +399,10 @@ fn handle_normal_key(
             if !app.accounts.is_empty() {
                 app.mode = AppMode::ConfirmSwap;
             }
+        }
+        KeyCode::Char('i') => {
+            crate::api::spawn_oauth_import(tx);
+            app.set_status("Importing from Claude Code...".to_string());
         }
         KeyCode::Char('?') => {
             app.mode = AppMode::Help;
@@ -537,6 +598,7 @@ mod tests {
             .map(|n| AccountConfig {
                 name: n.to_string(),
                 org_id: format!("org-{n}"),
+                auth_method: AuthMethod::default(),
             })
             .collect();
         let config = Config {

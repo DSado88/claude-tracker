@@ -16,7 +16,17 @@ pub enum Event {
         account_name: String,
         result: Result<UsageData, String>,
     },
+    OAuthImportResult {
+        result: Result<OAuthImportData, String>,
+    },
     Resize(u16, u16),
+}
+
+#[derive(Debug)]
+pub struct OAuthImportData {
+    pub name: String,
+    pub org_id: String,
+    pub credential_json: String,
 }
 
 pub struct EventHandler {

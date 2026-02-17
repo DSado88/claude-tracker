@@ -4,33 +4,46 @@ use chrono::{DateTime, Utc};
 use tokio::sync::mpsc;
 
 use crate::app::{AppState, UsageData};
+use crate::config::AuthMethod;
 use crate::event::Event;
+use crate::oauth;
 
 pub fn spawn_fetch_all(app: &AppState, tx: &mpsc::UnboundedSender<Event>) {
     for (i, account) in app.accounts.iter().enumerate() {
         let tx = tx.clone();
         let account_name = account.config.name.clone();
         let org_id = account.config.org_id.clone();
+        let auth_method = account.config.auth_method.clone();
         let keyring = app.keyring.clone();
         let stagger = Duration::from_millis(100 * i as u64);
 
         tokio::spawn(async move {
             tokio::time::sleep(stagger).await;
 
-            let session_key = match keyring.get_session_key(&account_name) {
-                Ok(key) => key,
-                Err(e) => {
-                    let _ = tx.send(Event::UsageResult {
-                        account_name: account_name.clone(),
-                        result: Err(e.to_string()),
-                    });
-                    return;
+            let result = match auth_method {
+                AuthMethod::SessionKey => {
+                    let session_key = match keyring.get_session_key(&account_name) {
+                        Ok(key) => key,
+                        Err(e) => {
+                            let _ = tx.send(Event::UsageResult {
+                                account_name,
+                                result: Err(e.to_string()),
+                            });
+                            return;
+                        }
+                    };
+                    fetch_usage_session_key(&session_key, &org_id).await
+                }
+                AuthMethod::OAuth => {
+                    match oauth::get_stored_token(keyring.as_ref(), &account_name) {
+                        Ok(token) => oauth::fetch_oauth_usage(&token).await,
+                        Err(e) => Err(e),
+                    }
                 }
             };
 
-            let result = fetch_usage(&session_key, &org_id).await;
             let _ = tx.send(Event::UsageResult {
-                account_name: account_name.clone(),
+                account_name,
                 result: result.map_err(|e| e.to_string()),
             });
         });
@@ -46,30 +59,78 @@ pub fn spawn_fetch_one(
         let tx = tx.clone();
         let account_name = account.config.name.clone();
         let org_id = account.config.org_id.clone();
+        let auth_method = account.config.auth_method.clone();
         let keyring = app.keyring.clone();
 
         tokio::spawn(async move {
-            let session_key = match keyring.get_session_key(&account_name) {
-                Ok(key) => key,
-                Err(e) => {
-                    let _ = tx.send(Event::UsageResult {
-                        account_name: account_name.clone(),
-                        result: Err(e.to_string()),
-                    });
-                    return;
+            let result = match auth_method {
+                AuthMethod::SessionKey => {
+                    let session_key = match keyring.get_session_key(&account_name) {
+                        Ok(key) => key,
+                        Err(e) => {
+                            let _ = tx.send(Event::UsageResult {
+                                account_name,
+                                result: Err(e.to_string()),
+                            });
+                            return;
+                        }
+                    };
+                    fetch_usage_session_key(&session_key, &org_id).await
+                }
+                AuthMethod::OAuth => {
+                    match oauth::get_stored_token(keyring.as_ref(), &account_name) {
+                        Ok(token) => oauth::fetch_oauth_usage(&token).await,
+                        Err(e) => Err(e),
+                    }
                 }
             };
 
-            let result = fetch_usage(&session_key, &org_id).await;
             let _ = tx.send(Event::UsageResult {
-                account_name: account_name.clone(),
+                account_name,
                 result: result.map_err(|e| e.to_string()),
             });
         });
     }
 }
 
-async fn fetch_usage(session_key: &str, org_id: &str) -> anyhow::Result<UsageData> {
+/// Import OAuth credentials from Claude Code's keychain, identify the account,
+/// and send the result back.
+pub fn spawn_oauth_import(tx: &mpsc::UnboundedSender<Event>) {
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = do_oauth_import().await;
+        let _ = tx.send(Event::OAuthImportResult {
+            result: result.map_err(|e| e.to_string()),
+        });
+    });
+}
+
+async fn do_oauth_import() -> anyhow::Result<crate::event::OAuthImportData> {
+    // Read Claude Code's credentials from macOS Keychain
+    let cred = oauth::read_claude_code_keychain()?;
+
+    // We don't refresh tokens ourselves to avoid token stripping detection.
+    // If expired, the user needs to use Claude Code first (which refreshes it).
+    if cred.needs_refresh() {
+        return Err(anyhow::anyhow!(
+            "Token expired. Use Claude Code first (any command), then press 'i' again"
+        ));
+    }
+
+    // Fetch profile to identify the account
+    let profile = oauth::fetch_profile(&cred.access_token).await?;
+
+    // Serialize credential for storage in our keyring
+    let credential_json = serde_json::to_string(&cred)?;
+
+    Ok(crate::event::OAuthImportData {
+        name: profile.email,
+        org_id: profile.org_id,
+        credential_json,
+    })
+}
+
+async fn fetch_usage_session_key(session_key: &str, org_id: &str) -> anyhow::Result<UsageData> {
     let client = reqwest::Client::new();
     let url = format!(
         "https://claude.ai/api/organizations/{}/usage",
@@ -96,7 +157,6 @@ async fn fetch_usage(session_key: &str, org_id: &str) -> anyhow::Result<UsageDat
     let utilization = parse_utilization(five_hour);
     let resets_at = parse_resets_at(five_hour);
 
-    // Parse seven_day bucket (may be null)
     let (weekly_utilization, weekly_resets_at) = body
         .get("seven_day")
         .filter(|v| !v.is_null())

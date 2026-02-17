@@ -6,6 +6,7 @@ use ratatui::widgets::{Block, Borders, Cell, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::app::{AccountStatus, AppState};
+use crate::config::AuthMethod;
 
 fn utilization_color(pct: u32) -> Color {
     match pct {
@@ -167,6 +168,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
                         };
 
                         let _ = d7_color; // used for bar already
+                        let auth_label = match account.config.auth_method {
+                            AuthMethod::OAuth => "OAuth",
+                            AuthMethod::SessionKey => "Key",
+                        };
                         Row::new(vec![
                             Cell::from(Span::styled(num, Style::default().fg(h5_color))),
                             Cell::from(Span::styled(name, name_style)),
@@ -176,7 +181,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
                             Cell::from(Span::styled(d7_pct, Style::default().fg(d7_color))),
                             Cell::from(d7_bar),
                             Cell::from(Span::styled(d7_reset, Style::default().fg(Color::Gray))),
-                            Cell::from(Span::styled("OK", Style::default().fg(Color::Gray))),
+                            Cell::from(Span::styled(auth_label, Style::default().fg(Color::Gray))),
                         ])
                     } else {
                         Row::new(vec![

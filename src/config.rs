@@ -3,6 +3,14 @@ use std::path::PathBuf;
 
 use crate::error::ConfigError;
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMethod {
+    #[default]
+    SessionKey,
+    OAuth,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -22,7 +30,10 @@ pub struct Settings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountConfig {
     pub name: String,
+    #[serde(default)]
     pub org_id: String,
+    #[serde(default)]
+    pub auth_method: AuthMethod,
 }
 
 fn default_poll_interval() -> u64 {

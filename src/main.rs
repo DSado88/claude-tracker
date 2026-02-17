@@ -4,6 +4,7 @@ mod config;
 mod error;
 mod event;
 mod keyring_store;
+mod oauth;
 mod swap;
 mod ui;
 
@@ -71,6 +72,18 @@ async fn run() -> Result<()> {
                 result,
             } => {
                 app.apply_usage_result(&account_name, result);
+            }
+            Event::OAuthImportResult { result } => {
+                match result {
+                    Ok(data) => {
+                        if let Some(idx) = app.import_oauth_account(data) {
+                            api::spawn_fetch_one(&app, idx, &event_tx);
+                        }
+                    }
+                    Err(msg) => {
+                        app.set_status(format!("Import failed: {msg}"));
+                    }
+                }
             }
             _ => {}
         }
