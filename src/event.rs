@@ -48,15 +48,19 @@ impl EventHandler {
             let mut render_interval = tokio::time::interval(render_rate);
             loop {
                 tokio::select! {
-                    Some(Ok(evt)) = reader.next() => {
-                        match evt {
-                            crossterm::event::Event::Key(key) => {
-                                let _ = sender.send(Event::Key(key));
-                            }
-                            crossterm::event::Event::Resize(w, h) => {
-                                let _ = sender.send(Event::Resize(w, h));
-                            }
-                            _ => {}
+                    event = reader.next() => {
+                        match event {
+                            Some(Ok(evt)) => match evt {
+                                crossterm::event::Event::Key(key) => {
+                                    let _ = sender.send(Event::Key(key));
+                                }
+                                crossterm::event::Event::Resize(w, h) => {
+                                    let _ = sender.send(Event::Resize(w, h));
+                                }
+                                _ => {}
+                            },
+                            None => break, // EOF — terminal closed
+                            Some(Err(_)) => {} // transient read error
                         }
                     }
                     _ = tick_interval.tick() => {

@@ -203,34 +203,42 @@ impl AppState {
 
     /// Write new key first. Only delete old key after new key write succeeds.
     fn update_account(&mut self, index: usize, name: String, session_key: String, org_id: String) {
+        // Immutable borrow to read old name — released before keyring ops
+        let Some(old_name) = self.accounts.get(index).map(|a| a.config.name.clone()) else {
+            return;
+        };
+        let name_changed = old_name != name;
+
+        // Write new key FIRST -- if this fails, old key is preserved
+        if let Err(e) = self.keyring.set_session_key(&name, &session_key) {
+            self.set_status(format!("Keyring error: {e}"));
+            return;
+        }
+
+        // Only delete old key AFTER new key is safely stored
+        if name_changed {
+            if let Err(e) = self.keyring.delete_session_key(&old_name) {
+                self.set_status(format!("Warning: old key not deleted: {e}"));
+            }
+        }
+
+        // Now mutate the account
         if let Some(account) = self.accounts.get_mut(index) {
-            let old_name = account.config.name.clone();
-            let name_changed = old_name != name;
-
-            // Write new key FIRST -- if this fails, old key is preserved
-            if let Err(e) = self.keyring.set_session_key(&name, &session_key) {
-                self.set_status(format!("Keyring error: {e}"));
-                return;
-            }
-
-            // Only delete old key AFTER new key is safely stored
-            if name_changed {
-                let _ = self.keyring.delete_session_key(&old_name);
-            }
-
             account.config.name = name;
             account.config.org_id = org_id;
             account.usage = None;
             account.status = AccountStatus::Idle;
-            self.save_config();
-            self.set_status("Account updated".to_string());
         }
+        self.save_config();
+        self.set_status("Account updated".to_string());
     }
 
     fn delete_selected(&mut self) {
         if self.selected_index < self.accounts.len() {
             let name = self.accounts[self.selected_index].config.name.clone();
-            let _ = self.keyring.delete_session_key(&name);
+            if let Err(e) = self.keyring.delete_session_key(&name) {
+                self.set_status(format!("Warning: key not deleted from keyring: {e}"));
+            }
             self.accounts.remove(self.selected_index);
 
             if self.selected_index >= self.accounts.len() && !self.accounts.is_empty() {

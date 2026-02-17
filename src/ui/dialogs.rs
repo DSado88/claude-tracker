@@ -138,7 +138,7 @@ pub fn render_help_overlay(frame: &mut Frame) {
         " j/k or Up/Down    Navigate accounts",
         " r                 Refresh all",
         " R                 Refresh selected",
-        " s or Enter        Swap to selected",
+        " s or Enter        Set active",
         " i                 Import from Claude Code",
         " a                 Add account (session key)",
         " e                 Edit account",

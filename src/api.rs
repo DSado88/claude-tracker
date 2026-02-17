@@ -1,12 +1,18 @@
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use tokio::sync::mpsc;
 
 use crate::app::{AppState, UsageData};
 use crate::config::AuthMethod;
 use crate::event::Event;
 use crate::oauth;
+
+/// Shared HTTP client for connection pooling across all API calls.
+pub(crate) fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
 
 pub fn spawn_fetch_all(app: &AppState, tx: &mpsc::UnboundedSender<Event>) {
     for (i, account) in app.accounts.iter().enumerate() {
@@ -19,32 +25,10 @@ pub fn spawn_fetch_all(app: &AppState, tx: &mpsc::UnboundedSender<Event>) {
 
         tokio::spawn(async move {
             tokio::time::sleep(stagger).await;
-
-            let result = match auth_method {
-                AuthMethod::SessionKey => {
-                    let session_key = match keyring.get_session_key(&account_name) {
-                        Ok(key) => key,
-                        Err(e) => {
-                            let _ = tx.send(Event::UsageResult {
-                                account_name,
-                                result: Err(e.to_string()),
-                            });
-                            return;
-                        }
-                    };
-                    fetch_usage_session_key(&session_key, &org_id).await
-                }
-                AuthMethod::OAuth => {
-                    match oauth::get_stored_token(keyring.as_ref(), &account_name) {
-                        Ok(token) => oauth::fetch_oauth_usage(&token).await,
-                        Err(e) => Err(e),
-                    }
-                }
-            };
-
+            let result = fetch_account_usage(&account_name, &org_id, &auth_method, &keyring).await;
             let _ = tx.send(Event::UsageResult {
                 account_name,
-                result: result.map_err(|e| e.to_string()),
+                result,
             });
         });
     }
@@ -63,34 +47,37 @@ pub fn spawn_fetch_one(
         let keyring = app.keyring.clone();
 
         tokio::spawn(async move {
-            let result = match auth_method {
-                AuthMethod::SessionKey => {
-                    let session_key = match keyring.get_session_key(&account_name) {
-                        Ok(key) => key,
-                        Err(e) => {
-                            let _ = tx.send(Event::UsageResult {
-                                account_name,
-                                result: Err(e.to_string()),
-                            });
-                            return;
-                        }
-                    };
-                    fetch_usage_session_key(&session_key, &org_id).await
-                }
-                AuthMethod::OAuth => {
-                    match oauth::get_stored_token(keyring.as_ref(), &account_name) {
-                        Ok(token) => oauth::fetch_oauth_usage(&token).await,
-                        Err(e) => Err(e),
-                    }
-                }
-            };
-
+            let result = fetch_account_usage(&account_name, &org_id, &auth_method, &keyring).await;
             let _ = tx.send(Event::UsageResult {
                 account_name,
-                result: result.map_err(|e| e.to_string()),
+                result,
             });
         });
     }
+}
+
+/// Shared fetch logic for both spawn_fetch_all and spawn_fetch_one.
+/// Uses format!("{e:#}") to preserve the full anyhow error chain across the channel boundary.
+async fn fetch_account_usage(
+    account_name: &str,
+    org_id: &str,
+    auth_method: &AuthMethod,
+    keyring: &Arc<dyn crate::keyring_store::KeyringBackend>,
+) -> Result<UsageData, String> {
+    let result = match auth_method {
+        AuthMethod::SessionKey => {
+            let session_key = keyring
+                .get_session_key(account_name)
+                .map_err(|e| format!("{e:#}"))?;
+            fetch_usage_session_key(&session_key, org_id).await
+        }
+        AuthMethod::OAuth => {
+            let token = oauth::get_stored_token(keyring.as_ref(), account_name)
+                .map_err(|e| format!("{e:#}"))?;
+            oauth::fetch_oauth_usage(&token).await
+        }
+    };
+    result.map_err(|e| format!("{e:#}"))
 }
 
 /// Import OAuth credentials from Claude Code's keychain, identify the account,
@@ -100,7 +87,7 @@ pub fn spawn_oauth_import(tx: &mpsc::UnboundedSender<Event>) {
     tokio::spawn(async move {
         let result = do_oauth_import().await;
         let _ = tx.send(Event::OAuthImportResult {
-            result: result.map_err(|e| e.to_string()),
+            result: result.map_err(|e| format!("{e:#}")),
         });
     });
 }
@@ -167,7 +154,7 @@ pub fn spawn_detect_logged_in(app: &AppState, tx: &mpsc::UnboundedSender<Event>)
 }
 
 async fn fetch_usage_session_key(session_key: &str, org_id: &str) -> anyhow::Result<UsageData> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!(
         "https://claude.ai/api/organizations/{}/usage",
         org_id
@@ -190,13 +177,13 @@ async fn fetch_usage_session_key(session_key: &str, org_id: &str) -> anyhow::Res
         .get("five_hour")
         .ok_or_else(|| anyhow::anyhow!("Missing five_hour field"))?;
 
-    let utilization = parse_utilization(five_hour);
-    let resets_at = parse_resets_at(five_hour);
+    let utilization = oauth::parse_utilization(five_hour);
+    let resets_at = oauth::parse_resets_at(five_hour);
 
     let (weekly_utilization, weekly_resets_at) = body
         .get("seven_day")
         .filter(|v| !v.is_null())
-        .map(|seven_day| (Some(parse_utilization(seven_day)), parse_resets_at(seven_day)))
+        .map(|seven_day| (Some(oauth::parse_utilization(seven_day)), oauth::parse_resets_at(seven_day)))
         .unwrap_or((None, None));
 
     Ok(UsageData {
@@ -207,24 +194,4 @@ async fn fetch_usage_session_key(session_key: &str, org_id: &str) -> anyhow::Res
     })
 }
 
-fn parse_utilization(bucket: &serde_json::Value) -> u32 {
-    bucket
-        .get("utilization")
-        .and_then(|v| v.as_u64().map(|n| n as f64).or_else(|| v.as_f64()))
-        .map(|v| {
-            if v > 0.0 && v <= 1.0 {
-                (v * 100.0).round() as u32
-            } else {
-                v.round() as u32
-            }
-        })
-        .unwrap_or(0)
-}
-
-fn parse_resets_at(bucket: &serde_json::Value) -> Option<DateTime<Utc>> {
-    bucket
-        .get("resets_at")
-        .and_then(|v| v.as_str())
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&Utc))
-}
+// parse_utilization and parse_resets_at live in oauth.rs (single source of truth)

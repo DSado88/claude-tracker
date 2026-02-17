@@ -12,7 +12,7 @@ pub fn render(frame: &mut Frame, area: Rect, _app: &AppState) {
         Span::styled("r", Style::default().fg(Color::White)),
         Span::styled(": refresh  ", Style::default().fg(Color::DarkGray)),
         Span::styled("s", Style::default().fg(Color::White)),
-        Span::styled(": swap  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(": set active  ", Style::default().fg(Color::DarkGray)),
         Span::styled("i", Style::default().fg(Color::White)),
         Span::styled(": import  ", Style::default().fg(Color::DarkGray)),
         Span::styled("a", Style::default().fg(Color::White)),

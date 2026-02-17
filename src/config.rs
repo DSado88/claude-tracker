@@ -60,19 +60,26 @@ pub fn config_path() -> Result<PathBuf, ConfigError> {
     Ok(config_dir()?.join("config.toml"))
 }
 
+const MIN_POLL_INTERVAL_SECS: u64 = 30;
+
 pub fn load_or_init() -> Result<Config, ConfigError> {
     let path = config_path()?;
-    if path.exists() {
-        let contents = std::fs::read_to_string(&path)?;
-        let config: Config = toml::from_str(&contents)?;
-        Ok(config)
-    } else {
-        let config = Config {
-            settings: Settings::default(),
-            accounts: vec![],
-        };
-        save(&config)?;
-        Ok(config)
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => {
+            let mut config: Config = toml::from_str(&contents)?;
+            config.settings.poll_interval_secs =
+                config.settings.poll_interval_secs.max(MIN_POLL_INTERVAL_SECS);
+            Ok(config)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let config = Config {
+                settings: Settings::default(),
+                accounts: vec![],
+            };
+            save(&config)?;
+            Ok(config)
+        }
+        Err(e) => Err(e.into()),
     }
 }
 

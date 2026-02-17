@@ -90,7 +90,7 @@ fn parse_credential_json(json_str: &str) -> anyhow::Result<OAuthCredential> {
 
 /// Fetch the account profile to identify which account a token belongs to.
 pub async fn fetch_profile(access_token: &str) -> anyhow::Result<OAuthProfile> {
-    let client = reqwest::Client::new();
+    let client = crate::api::http_client();
     let resp = client
         .get(PROFILE_ENDPOINT)
         .header("Authorization", format!("Bearer {}", access_token))
@@ -119,7 +119,8 @@ pub async fn fetch_profile(access_token: &str) -> anyhow::Result<OAuthProfile> {
         org_id: org
             .get("uuid")
             .and_then(|v| v.as_str())
-            .unwrap_or("")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Missing or empty org ID in profile response"))?
             .to_string(),
         org_name: org
             .get("name")
@@ -131,7 +132,7 @@ pub async fn fetch_profile(access_token: &str) -> anyhow::Result<OAuthProfile> {
 
 /// Fetch usage data using an OAuth access token.
 pub async fn fetch_oauth_usage(access_token: &str) -> anyhow::Result<UsageData> {
-    let client = reqwest::Client::new();
+    let client = crate::api::http_client();
     let resp = client
         .get(USAGE_ENDPOINT)
         .header("Authorization", format!("Bearer {}", access_token))
@@ -211,7 +212,7 @@ pub(crate) fn get_stored_token_with_fallback(
     Ok(cred.access_token)
 }
 
-fn parse_utilization(bucket: &serde_json::Value) -> u32 {
+pub(crate) fn parse_utilization(bucket: &serde_json::Value) -> u32 {
     bucket
         .get("utilization")
         .and_then(|v| v.as_u64().map(|n| n as f64).or_else(|| v.as_f64()))
@@ -225,7 +226,7 @@ fn parse_utilization(bucket: &serde_json::Value) -> u32 {
         .unwrap_or(0)
 }
 
-fn parse_resets_at(bucket: &serde_json::Value) -> Option<chrono::DateTime<Utc>> {
+pub(crate) fn parse_resets_at(bucket: &serde_json::Value) -> Option<chrono::DateTime<Utc>> {
     bucket
         .get("resets_at")
         .and_then(|v| v.as_str())

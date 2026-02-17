@@ -41,7 +41,7 @@ pub fn draw(frame: &mut Frame, app: &AppState) {
             if let Some(account) = app.accounts.get(app.selected_index) {
                 dialogs::render_confirm_dialog(
                     frame,
-                    &format!("Swap to '{}'?", account.config.name),
+                    &format!("Set '{}' as active?", account.config.name),
                     "y: confirm  n/Esc: cancel",
                 );
             }
