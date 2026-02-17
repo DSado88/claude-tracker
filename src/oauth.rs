@@ -5,6 +5,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::UsageData;
 
+fn debug_log(msg: &str) {
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/claude-tracker-debug.log")
+        .and_then(|mut f| {
+            use std::io::Write;
+            writeln!(f, "[{}] {}", chrono::Utc::now(), msg)
+        });
+}
+
 const OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const TOKEN_ENDPOINT: &str = "https://console.anthropic.com/v1/oauth/token";
 const USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -185,6 +196,8 @@ pub async fn fetch_oauth_usage(access_token: &str) -> anyhow::Result<UsageData> 
 
     let body: serde_json::Value = resp.json().await?;
 
+    debug_log(&format!("OAuth usage response: {}", body));
+
     let five_hour = body
         .get("five_hour")
         .ok_or_else(|| anyhow::anyhow!("Missing five_hour field"))?;
@@ -213,12 +226,22 @@ pub fn get_stored_token(
     keyring: &dyn crate::keyring_store::KeyringBackend,
     account_name: &str,
 ) -> anyhow::Result<String> {
+    debug_log(&format!("get_stored_token for '{account_name}'"));
+
     let stored = keyring
         .get_session_key(account_name)
-        .map_err(|e| anyhow::anyhow!("No OAuth credential stored: {e}"))?;
+        .map_err(|e| {
+            debug_log(&format!("  keyring read failed: {e}"));
+            anyhow::anyhow!("No OAuth credential stored: {e}")
+        })?;
 
     let cred: OAuthCredential = serde_json::from_str(&stored)
-        .map_err(|e| anyhow::anyhow!("Invalid OAuth credential JSON: {e}"))?;
+        .map_err(|e| {
+            debug_log(&format!("  JSON parse failed: {e}"));
+            anyhow::anyhow!("Invalid OAuth credential JSON: {e}")
+        })?;
+
+    debug_log(&format!("  needs_refresh={}, expires_at={}", cred.needs_refresh(), cred.expires_at));
 
     if !cred.needs_refresh() {
         return Ok(cred.access_token);

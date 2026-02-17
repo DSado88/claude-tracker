@@ -168,9 +168,24 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
                         };
 
                         let _ = d7_color; // used for bar already
-                        let auth_label = match account.config.auth_method {
-                            AuthMethod::OAuth => "OAuth",
-                            AuthMethod::SessionKey => "Key",
+                        // Show staleness: how long since last successful fetch
+                        let status_label = if let Some(fetched) = &account.last_fetched {
+                            let ago = Utc::now().signed_duration_since(*fetched).num_minutes();
+                            if ago < 2 {
+                                "Live".to_string()
+                            } else if ago < 60 {
+                                format!("{}m ago", ago)
+                            } else {
+                                format!("{}h ago", ago / 60)
+                            }
+                        } else {
+                            "--".to_string()
+                        };
+                        let status_color = if let Some(fetched) = &account.last_fetched {
+                            let ago = Utc::now().signed_duration_since(*fetched).num_minutes();
+                            if ago < 2 { Color::Gray } else { Color::Yellow }
+                        } else {
+                            Color::DarkGray
                         };
                         Row::new(vec![
                             Cell::from(Span::styled(num, Style::default().fg(h5_color))),
@@ -181,7 +196,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
                             Cell::from(Span::styled(d7_pct, Style::default().fg(d7_color))),
                             Cell::from(d7_bar),
                             Cell::from(Span::styled(d7_reset, Style::default().fg(Color::Gray))),
-                            Cell::from(Span::styled(auth_label, Style::default().fg(Color::Gray))),
+                            Cell::from(Span::styled(status_label, Style::default().fg(status_color))),
                         ])
                     } else {
                         Row::new(vec![
