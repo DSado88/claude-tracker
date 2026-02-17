@@ -48,6 +48,22 @@ fn empty_bar_line() -> Line<'static> {
     ))
 }
 
+/// Build a placeholder row with "--" for all usage columns and a custom status cell.
+fn placeholder_row(num: String, name: String, status: &str, color: Color) -> Row<'static> {
+    let style = Style::default().fg(color);
+    Row::new(vec![
+        Cell::from(Span::styled(num, style)),
+        Cell::from(Span::styled(name, style)),
+        Cell::from(Span::styled("--", style)),
+        Cell::from(empty_bar_line()),
+        Cell::from(Span::styled("--", style)),
+        Cell::from(Span::styled("--", style)),
+        Cell::from(empty_bar_line()),
+        Cell::from(Span::styled("--", style)),
+        Cell::from(Span::styled(status.to_string(), style)),
+    ])
+}
+
 fn format_countdown(resets_at: &chrono::DateTime<Utc>) -> String {
     let now = Utc::now();
     let diff = resets_at.signed_duration_since(now);
@@ -106,23 +122,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
             };
 
             match &account.status {
-                AccountStatus::Idle | AccountStatus::Fetching => {
-                    let label = if account.status == AccountStatus::Idle {
-                        "Idle"
-                    } else {
-                        "..."
-                    };
-                    Row::new(vec![
-                        Cell::from(Span::styled(num, Style::default().fg(Color::DarkGray))),
-                        Cell::from(Span::styled(name, Style::default().fg(Color::DarkGray))),
-                        Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray))),
-                        Cell::from(empty_bar_line()),
-                        Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray))),
-                        Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray))),
-                        Cell::from(empty_bar_line()),
-                        Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray))),
-                        Cell::from(Span::styled(label, Style::default().fg(Color::DarkGray))),
-                    ])
+                AccountStatus::Idle => {
+                    placeholder_row(num, name, "Idle", Color::DarkGray)
                 }
                 AccountStatus::Ok => {
                     if let Some(usage) = &account.usage {
@@ -208,17 +209,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
                             status_cell,
                         ])
                     } else {
-                        Row::new(vec![
-                            Cell::from(Span::styled(num, Style::default().fg(Color::DarkGray))),
-                            Cell::from(Span::styled(name, Style::default().fg(Color::DarkGray))),
-                            Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray))),
-                            Cell::from(empty_bar_line()),
-                            Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray))),
-                            Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray))),
-                            Cell::from(empty_bar_line()),
-                            Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray))),
-                            Cell::from(Span::styled("OK", Style::default().fg(Color::Gray))),
-                        ])
+                        placeholder_row(num, name, "OK", Color::Gray)
                     }
                 }
                 AccountStatus::Error(msg) => {
@@ -228,17 +219,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
                     } else {
                         msg.clone()
                     };
-                    Row::new(vec![
-                        Cell::from(Span::styled(num, Style::default().fg(Color::Red))),
-                        Cell::from(Span::styled(name, Style::default().fg(Color::Red))),
-                        Cell::from(Span::styled("--", Style::default().fg(Color::Red))),
-                        Cell::from(empty_bar_line()),
-                        Cell::from(Span::styled("--", Style::default().fg(Color::Red))),
-                        Cell::from(Span::styled("--", Style::default().fg(Color::Red))),
-                        Cell::from(empty_bar_line()),
-                        Cell::from(Span::styled("--", Style::default().fg(Color::Red))),
-                        Cell::from(Span::styled(short, Style::default().fg(Color::Red))),
-                    ])
+                    placeholder_row(num, name, &short, Color::Red)
                 }
             }
         })

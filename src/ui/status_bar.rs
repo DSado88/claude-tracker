@@ -1,5 +1,5 @@
 use chrono::Utc;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
@@ -7,11 +7,19 @@ use ratatui::Frame;
 use crate::app::AppState;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
-    let mut spans = vec![
+    let mut left_spans = vec![
         Span::styled(" Claude Tracker", Style::default().fg(Color::Cyan)),
     ];
 
-    // Last refresh time
+    // Status message (shown next to title)
+    if let Some((msg, _)) = &app.status_message {
+        left_spans.push(Span::raw("  "));
+        left_spans.push(Span::styled(msg.clone(), Style::default().fg(Color::Yellow)));
+    }
+
+    let left_line = Line::from(left_spans);
+
+    // Last refresh time (right-aligned)
     if let Some(last) = &app.last_poll {
         let ago = Utc::now().signed_duration_since(*last).num_seconds();
         let ago_text = if ago < 60 {
@@ -19,25 +27,19 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
         } else {
             format!("{}m ago", ago / 60)
         };
-        // Right-align: pad with spaces
-        let used = 16 + ago_text.len() + 18; // rough estimate
-        let padding = if area.width as usize > used {
-            area.width as usize - used
-        } else {
-            1
-        };
-        spans.push(Span::raw(" ".repeat(padding)));
-        spans.push(Span::styled(
-            format!("Last refresh: {ago_text}"),
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
+        let right_text = format!("Last refresh: {ago_text} ");
+        let right_len = right_text.len() as u16;
+        let right_line = Line::from(Span::styled(right_text, Style::default().fg(Color::DarkGray)));
 
-    // Status message
-    if let Some((msg, _)) = &app.status_message {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(msg.clone(), Style::default().fg(Color::Yellow)));
-    }
+        let chunks = Layout::horizontal([
+            Constraint::Min(0),
+            Constraint::Length(right_len),
+        ])
+        .split(area);
 
-    frame.render_widget(Line::from(spans), area);
+        frame.render_widget(left_line, chunks[0]);
+        frame.render_widget(right_line, chunks[1]);
+    } else {
+        frame.render_widget(left_line, area);
+    }
 }

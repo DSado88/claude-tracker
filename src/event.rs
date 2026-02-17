@@ -22,7 +22,7 @@ pub enum Event {
     LoggedInDetected {
         account_name: Option<String>,
     },
-    Resize(u16, u16),
+    Resize,
 }
 
 #[derive(Debug)]
@@ -54,8 +54,8 @@ impl EventHandler {
                                 crossterm::event::Event::Key(key) => {
                                     let _ = sender.send(Event::Key(key));
                                 }
-                                crossterm::event::Event::Resize(w, h) => {
-                                    let _ = sender.send(Event::Resize(w, h));
+                                crossterm::event::Event::Resize(..) => {
+                                    let _ = sender.send(Event::Resize);
                                 }
                                 _ => {}
                             },

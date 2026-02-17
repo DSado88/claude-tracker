@@ -20,7 +20,6 @@ pub struct OAuthCredential {
 pub struct OAuthProfile {
     pub email: String,
     pub org_id: String,
-    pub org_name: String,
 }
 
 impl OAuthCredential {
@@ -121,11 +120,6 @@ pub async fn fetch_profile(access_token: &str) -> anyhow::Result<OAuthProfile> {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("Missing or empty org ID in profile response"))?
-            .to_string(),
-        org_name: org
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
             .to_string(),
     })
 }

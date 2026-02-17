@@ -145,7 +145,10 @@ pub fn spawn_detect_logged_in(app: &AppState, tx: &mpsc::UnboundedSender<Event>)
             None
         })
         .await
-        .unwrap_or(None);
+        .unwrap_or_else(|e| {
+            eprintln!("detect_logged_in task panicked: {e}");
+            None
+        });
 
         let _ = tx.send(Event::LoggedInDetected {
             account_name: result,
@@ -193,5 +196,3 @@ async fn fetch_usage_session_key(session_key: &str, org_id: &str) -> anyhow::Res
         weekly_resets_at,
     })
 }
-
-// parse_utilization and parse_resets_at live in oauth.rs (single source of truth)

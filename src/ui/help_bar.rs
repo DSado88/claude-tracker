@@ -1,12 +1,10 @@
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
-use crate::app::AppState;
-
-pub fn render(frame: &mut Frame, area: Rect, _app: &AppState) {
-    let line1 = Line::from(vec![
+pub fn render(frame: &mut Frame, area: Rect) {
+    let line = Line::from(vec![
         Span::styled(" j/k", Style::default().fg(Color::White)),
         Span::styled(": navigate  ", Style::default().fg(Color::DarkGray)),
         Span::styled("r", Style::default().fg(Color::White)),
@@ -27,7 +25,5 @@ pub fn render(frame: &mut Frame, area: Rect, _app: &AppState) {
         Span::styled(": quit", Style::default().fg(Color::DarkGray)),
     ]);
 
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)])
-        .split(area);
-    frame.render_widget(line1, rows[0]);
+    frame.render_widget(line, area);
 }

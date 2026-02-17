@@ -89,6 +89,9 @@ pub fn save(config: &Config) -> Result<(), ConfigError> {
         std::fs::create_dir_all(parent)?;
     }
     let toml_str = toml::to_string_pretty(config)?;
-    std::fs::write(&path, toml_str)?;
+    // Atomic write: write to temp file then rename, so a crash can't corrupt the config
+    let tmp_path = path.with_extension("toml.tmp");
+    std::fs::write(&tmp_path, &toml_str)?;
+    std::fs::rename(&tmp_path, &path)?;
     Ok(())
 }

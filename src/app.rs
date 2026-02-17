@@ -19,7 +19,6 @@ pub struct UsageData {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AccountStatus {
     Idle,
-    Fetching,
     Ok,
     Error(String),
 }
@@ -63,7 +62,7 @@ impl InputFields {
             0 => &mut self.name,
             1 => &mut self.session_key,
             2 => &mut self.org_id,
-            _ => &mut self.name,
+            _ => unreachable!("focused_field must be 0..2, got {}", self.focused_field),
         }
     }
 
@@ -93,7 +92,6 @@ pub struct AppState {
     pub keyring: Arc<dyn KeyringBackend>,
     /// Which account name matches the token currently in Claude Code's keychain.
     pub logged_in_account: Option<String>,
-    config: Config,
 }
 
 impl AppState {
@@ -123,7 +121,6 @@ impl AppState {
             logged_in_account: None,
             poll_interval_secs: config.settings.poll_interval_secs,
             keyring,
-            config,
         }
     }
 
@@ -167,13 +164,14 @@ impl AppState {
     }
 
     fn save_config(&mut self) {
-        self.config.accounts = self
-            .accounts
-            .iter()
-            .map(|a| a.config.clone())
-            .collect();
-        self.config.settings.active_account = self.active_account_index;
-        if let Err(e) = config::save(&self.config) {
+        let cfg = Config {
+            settings: config::Settings {
+                poll_interval_secs: self.poll_interval_secs,
+                active_account: self.active_account_index,
+            },
+            accounts: self.accounts.iter().map(|a| a.config.clone()).collect(),
+        };
+        if let Err(e) = config::save(&cfg) {
             self.set_status(format!("Failed to save config: {e}"));
         }
     }
@@ -241,11 +239,16 @@ impl AppState {
             }
             self.accounts.remove(self.selected_index);
 
-            if self.selected_index >= self.accounts.len() && !self.accounts.is_empty() {
-                self.selected_index = self.accounts.len() - 1;
-            }
-            if self.active_account_index >= self.accounts.len() && !self.accounts.is_empty() {
-                self.active_account_index = self.accounts.len() - 1;
+            if self.accounts.is_empty() {
+                self.selected_index = 0;
+                self.active_account_index = 0;
+            } else {
+                if self.selected_index >= self.accounts.len() {
+                    self.selected_index = self.accounts.len() - 1;
+                }
+                if self.active_account_index >= self.accounts.len() {
+                    self.active_account_index = self.accounts.len() - 1;
+                }
             }
             self.save_config();
             self.set_status("Account deleted".to_string());
@@ -319,10 +322,10 @@ fn handle_normal_key(
     tx: &mpsc::UnboundedSender<Event>,
 ) {
     match key.code {
-        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('q') => {
             app.should_quit = true;
         }
-        KeyCode::Char('q') => {
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
         KeyCode::Char('j') | KeyCode::Down => {
@@ -357,10 +360,13 @@ fn handle_normal_key(
                 let name = account.config.name.clone();
                 app.input_fields.name = name.clone();
                 app.input_fields.org_id = account.config.org_id.clone();
-                app.input_fields.session_key = app
-                    .keyring
-                    .get_session_key(&name)
-                    .unwrap_or_default();
+                app.input_fields.session_key = match app.keyring.get_session_key(&name) {
+                    Ok(key) => key,
+                    Err(e) => {
+                        app.set_status(format!("Keyring read failed: {e}"));
+                        String::new()
+                    }
+                };
                 app.input_fields.focused_field = 0;
                 app.mode = AppMode::EditAccount(app.selected_index);
             }
@@ -585,33 +591,27 @@ mod tests {
     }
 
     // =========================================================================
-    // BUG 1: add_account failure causes panic via len()-1 underflow
+    // FIX VERIFIED: add_account failure does not panic.
     //
-    // Scenario: 0 accounts, keyring write fails, add_account returns without
-    // pushing. handle_input_key then does `accounts.len() - 1` on a usize = 0
-    // which panics with underflow.
-    //
-    // Expected: should NOT panic; should set an error status message instead.
+    // Scenario: 0 accounts, keyring write fails, add_account returns None.
+    // The if-let guard in handle_input_key prevents any index arithmetic
+    // on the empty list.
     // =========================================================================
     #[test]
-    fn bug1_add_account_failure_on_empty_list_must_not_panic() {
+    fn add_account_failure_on_empty_list_does_not_panic() {
         let mock = Arc::new(MockKeyring::with_fail_on_set());
         let mut app = test_app(&[], mock);
 
-        // Simulate user filling in the add-account form
         app.mode = AppMode::AddAccount;
         app.input_fields.name = "Test".to_string();
         app.input_fields.session_key = "sk-test".to_string();
         app.input_fields.org_id = "org-test".to_string();
 
-        // Press Enter to submit -- this triggers handle_input_key
         let (tx, _rx) = mpsc::unbounded_channel();
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
 
-        // BUG: this panics because add_account fails, len()=0, 0-1 underflows
         handle_key(&mut app, key, &tx);
 
-        // If we reach here, no panic occurred
         assert_eq!(app.accounts.len(), 0, "No account should have been added");
         assert!(
             app.status_message.is_some(),

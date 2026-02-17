@@ -50,13 +50,14 @@ pub fn render_input_dialog(frame: &mut Frame, title: &str, fields: &InputFields)
         };
 
         let display_value = if i == 1 && !value.is_empty() {
-            // Mask session key, show last 8 chars
-            let visible = if value.len() > 8 {
-                &value[value.len() - 8..]
+            // Mask session key, show last 8 chars (char-safe)
+            let chars: Vec<char> = value.chars().collect();
+            let visible: String = if chars.len() > 8 {
+                chars[chars.len() - 8..].iter().collect()
             } else {
-                value.as_str()
+                value.to_string()
             };
-            format!("{}...{}", &"*".repeat(8), visible)
+            format!("{}...{}", "*".repeat(8), visible)
         } else {
             value.to_string()
         };
