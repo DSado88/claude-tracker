@@ -29,7 +29,7 @@ pub enum Event {
 pub struct OAuthImportData {
     pub name: String,
     pub org_id: String,
-    pub credential_json: String,
+    pub access_token: String,
 }
 
 pub struct EventHandler {

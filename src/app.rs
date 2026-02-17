@@ -259,8 +259,8 @@ impl AppState {
     /// already exists, update its credentials. Otherwise, add a new account.
     /// Returns the account index on success.
     pub fn import_oauth_account(&mut self, data: OAuthImportData) -> Option<usize> {
-        // Store the OAuth credential JSON in our keyring
-        if let Err(e) = self.keyring.set_session_key(&data.name, &data.credential_json) {
+        // Store just the access token in our keyring
+        if let Err(e) = self.keyring.set_session_key(&data.name, &data.access_token) {
             self.set_status(format!("Keyring error: {e}"));
             return None;
         }

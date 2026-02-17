@@ -22,20 +22,20 @@ Built with Rust + [ratatui](https://github.com/ratatui/ratatui). Designed for pe
 
 ## Security & Token Handling
 
-**We never refresh tokens ourselves.** All OAuth tokens come directly from Claude Code's own keychain entry. We only read them to:
+**We only store access tokens — no refresh tokens.** On import (`i`), we read Claude Code's current access token from its keychain entry and use it to:
 
 - Call the usage API (read-only, `GET /api/oauth/usage`)
 - Call the profile API once at import (to identify the account)
 - Compare access tokens locally to detect which account is currently logged in
 
-This avoids any appearance of token stripping. If an access token expires, the tracker tries re-reading Claude Code's keychain (in case Claude Code refreshed it), but **only if the refresh token matches** — preventing one account's credential from silently overwriting another's. If still expired, the cached countdown remains accurate — you just won't get updated utilization % until you use Claude Code with that account again.
+If an access token expires, the cached countdown timer remains accurate — you just won't get updated utilization % until you re-import (`i`) after using Claude Code with that account. When a reset timer expires, the tracker automatically displays 0% instead of stale data.
 
 **What's stored where:**
 
 | Data | Location | Notes |
 |------|----------|-------|
 | Account names + org IDs | `~/.config/claude-tracker/config.toml` | No secrets |
-| OAuth credentials (access + refresh tokens) | macOS Keychain under `claude-tracker` service | Per-account entries |
+| Access tokens | macOS Keychain under `claude-tracker` service | Per-account, plain string |
 | Claude Code's own credentials | macOS Keychain under `Claude Code-credentials` service | Read-only (we read from here on import) |
 
 **Nothing is stored in plaintext on disk.** All tokens live in the macOS Keychain.
@@ -77,7 +77,7 @@ CLAUDE_CONFIG_DIR=~/.claude-acct2 claude
 # Repeat for account #3 with CLAUDE_CONFIG_DIR=~/.claude-acct3
 ```
 
-After importing, all accounts poll independently. The refresh tokens persist in your keychain — you don't need to re-import unless a token gets revoked.
+After importing, all accounts poll independently. Access tokens persist in your keychain — re-import (`i`) when a token expires.
 
 ## Status Column
 

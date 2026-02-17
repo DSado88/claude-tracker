@@ -72,7 +72,8 @@ async fn fetch_account_usage(
             fetch_usage_session_key(&session_key, org_id).await
         }
         AuthMethod::OAuth => {
-            let token = oauth::get_stored_token(keyring.as_ref(), account_name)
+            let token = keyring
+                .get_session_key(account_name)
                 .map_err(|e| format!("{e:#}"))?;
             oauth::fetch_oauth_usage(&token).await
         }
@@ -93,26 +94,16 @@ pub fn spawn_oauth_import(tx: &mpsc::UnboundedSender<Event>) {
 }
 
 async fn do_oauth_import() -> anyhow::Result<crate::event::OAuthImportData> {
-    // Read Claude Code's credentials from macOS Keychain
-    let cred = oauth::read_claude_code_keychain()?;
+    // Read Claude Code's access token from macOS Keychain
+    let access_token = oauth::read_claude_code_access_token()?;
 
-    // We don't refresh tokens ourselves to avoid token stripping detection.
-    if cred.needs_refresh() {
-        return Err(anyhow::anyhow!(
-            "Token expired. Use Claude Code first (any command), then press 'i' again"
-        ));
-    }
-
-    // Fetch profile to identify the account
-    let profile = oauth::fetch_profile(&cred.access_token).await?;
-
-    // Serialize credential for storage in our keyring
-    let credential_json = serde_json::to_string(&cred)?;
+    // Fetch profile to identify the account (also validates the token is alive)
+    let profile = oauth::fetch_profile(&access_token).await?;
 
     Ok(crate::event::OAuthImportData {
         name: profile.email,
         org_id: profile.org_id,
-        credential_json,
+        access_token,
     })
 }
 
@@ -130,15 +121,11 @@ pub fn spawn_detect_logged_in(app: &AppState, tx: &mpsc::UnboundedSender<Event>)
 
     tokio::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
-            let cc_cred = oauth::read_claude_code_keychain().ok()?;
+            let cc_token = oauth::read_claude_code_access_token().ok()?;
             for name in &oauth_accounts {
-                if let Ok(stored_json) = keyring.get_session_key(name) {
-                    if let Ok(stored_cred) =
-                        serde_json::from_str::<oauth::OAuthCredential>(&stored_json)
-                    {
-                        if stored_cred.access_token == cc_cred.access_token {
-                            return Some(name.clone());
-                        }
+                if let Ok(stored_token) = keyring.get_session_key(name) {
+                    if stored_token == cc_token {
+                        return Some(name.clone());
                     }
                 }
             }
