@@ -5,19 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::UsageData;
 
-fn debug_log(msg: &str) {
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/claude-tracker-debug.log")
-        .and_then(|mut f| {
-            use std::io::Write;
-            writeln!(f, "[{}] {}", chrono::Utc::now(), msg)
-        });
-}
-
-const OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const TOKEN_ENDPOINT: &str = "https://console.anthropic.com/v1/oauth/token";
 const USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
 const PROFILE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/profile";
 const BETA_HEADER: &str = "oauth-2025-04-20";
@@ -37,10 +24,6 @@ pub struct OAuthProfile {
 }
 
 impl OAuthCredential {
-    pub fn is_expired(&self) -> bool {
-        Utc::now().timestamp_millis() >= self.expires_at
-    }
-
     pub fn needs_refresh(&self) -> bool {
         // Refresh if within 15 minutes of expiry
         let buffer_ms = 15 * 60 * 1000;
@@ -105,41 +88,6 @@ fn parse_credential_json(json_str: &str) -> anyhow::Result<OAuthCredential> {
     })
 }
 
-/// Refresh an OAuth access token using the refresh token.
-pub async fn refresh_token(refresh_token: &str) -> anyhow::Result<OAuthCredential> {
-    let client = reqwest::Client::new();
-    let body = format!(
-        "grant_type=refresh_token&refresh_token={}&client_id={}",
-        refresh_token, OAUTH_CLIENT_ID
-    );
-
-    let resp = client
-        .post(TOKEN_ENDPOINT)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(body)
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await?
-        .error_for_status()?;
-
-    let json: serde_json::Value = resp.json().await?;
-
-    let access_token = json["access_token"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing access_token in refresh response"))?;
-    let new_refresh = json["refresh_token"]
-        .as_str()
-        .unwrap_or(refresh_token);
-    let expires_in = json["expires_in"].as_i64().unwrap_or(28800);
-    let expires_at = Utc::now().timestamp_millis() + (expires_in * 1000);
-
-    Ok(OAuthCredential {
-        access_token: access_token.to_string(),
-        refresh_token: new_refresh.to_string(),
-        expires_at,
-    })
-}
-
 /// Fetch the account profile to identify which account a token belongs to.
 pub async fn fetch_profile(access_token: &str) -> anyhow::Result<OAuthProfile> {
     let client = reqwest::Client::new();
@@ -196,8 +144,6 @@ pub async fn fetch_oauth_usage(access_token: &str) -> anyhow::Result<UsageData> 
 
     let body: serde_json::Value = resp.json().await?;
 
-    debug_log(&format!("OAuth usage response: {}", body));
-
     let five_hour = body
         .get("five_hour")
         .ok_or_else(|| anyhow::anyhow!("Missing five_hour field"))?;
@@ -226,22 +172,12 @@ pub fn get_stored_token(
     keyring: &dyn crate::keyring_store::KeyringBackend,
     account_name: &str,
 ) -> anyhow::Result<String> {
-    debug_log(&format!("get_stored_token for '{account_name}'"));
-
     let stored = keyring
         .get_session_key(account_name)
-        .map_err(|e| {
-            debug_log(&format!("  keyring read failed: {e}"));
-            anyhow::anyhow!("No OAuth credential stored: {e}")
-        })?;
+        .map_err(|e| anyhow::anyhow!("No OAuth credential stored: {e}"))?;
 
     let cred: OAuthCredential = serde_json::from_str(&stored)
-        .map_err(|e| {
-            debug_log(&format!("  JSON parse failed: {e}"));
-            anyhow::anyhow!("Invalid OAuth credential JSON: {e}")
-        })?;
-
-    debug_log(&format!("  needs_refresh={}, expires_at={}", cred.needs_refresh(), cred.expires_at));
+        .map_err(|e| anyhow::anyhow!("Invalid OAuth credential JSON: {e}"))?;
 
     if !cred.needs_refresh() {
         return Ok(cred.access_token);

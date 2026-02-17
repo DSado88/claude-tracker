@@ -5,7 +5,6 @@ mod error;
 mod event;
 mod keyring_store;
 mod oauth;
-mod swap;
 mod ui;
 
 use std::time::{Duration, Instant};

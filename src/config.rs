@@ -39,7 +39,7 @@ pub struct AccountConfig {
 }
 
 fn default_poll_interval() -> u64 {
-    30
+    180
 }
 
 impl Default for Settings {
@@ -58,10 +58,6 @@ pub fn config_dir() -> Result<PathBuf, ConfigError> {
 
 pub fn config_path() -> Result<PathBuf, ConfigError> {
     Ok(config_dir()?.join("config.toml"))
-}
-
-pub fn active_session_path() -> Result<PathBuf, ConfigError> {
-    Ok(config_dir()?.join("active_session.json"))
 }
 
 pub fn load_or_init() -> Result<Config, ConfigError> {

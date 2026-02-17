@@ -6,7 +6,6 @@ use ratatui::widgets::{Block, Borders, Cell, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::app::{AccountStatus, AppState};
-use crate::config::AuthMethod;
 
 fn utilization_color(pct: u32) -> Color {
     match pct {
