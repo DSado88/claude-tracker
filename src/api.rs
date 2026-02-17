@@ -106,22 +106,55 @@ pub fn spawn_oauth_import(tx: &mpsc::UnboundedSender<Event>) {
 }
 
 async fn do_oauth_import() -> anyhow::Result<crate::event::OAuthImportData> {
+    let log = |msg: &str| {
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/claude-tracker-debug.log")
+            .and_then(|mut f| {
+                use std::io::Write;
+                writeln!(f, "[{}] {}", chrono::Utc::now(), msg)
+            });
+    };
+
+    log("Starting OAuth import...");
+
     // Read Claude Code's credentials from macOS Keychain
-    let cred = oauth::read_claude_code_keychain()?;
+    let cred = match oauth::read_claude_code_keychain() {
+        Ok(c) => {
+            log(&format!("Keychain read OK, expires_at={}", c.expires_at));
+            c
+        }
+        Err(e) => {
+            log(&format!("Keychain read FAILED: {e}"));
+            return Err(e);
+        }
+    };
 
     // We don't refresh tokens ourselves to avoid token stripping detection.
-    // If expired, the user needs to use Claude Code first (which refreshes it).
     if cred.needs_refresh() {
+        log("Token needs refresh — rejecting import");
         return Err(anyhow::anyhow!(
             "Token expired. Use Claude Code first (any command), then press 'i' again"
         ));
     }
 
+    log("Fetching profile...");
     // Fetch profile to identify the account
-    let profile = oauth::fetch_profile(&cred.access_token).await?;
+    let profile = match oauth::fetch_profile(&cred.access_token).await {
+        Ok(p) => {
+            log(&format!("Profile OK: email={}, org={}", p.email, p.org_id));
+            p
+        }
+        Err(e) => {
+            log(&format!("Profile fetch FAILED: {e}"));
+            return Err(e);
+        }
+    };
 
     // Serialize credential for storage in our keyring
     let credential_json = serde_json::to_string(&cred)?;
+    log(&format!("Import complete for '{}'", profile.email));
 
     Ok(crate::event::OAuthImportData {
         name: profile.email,

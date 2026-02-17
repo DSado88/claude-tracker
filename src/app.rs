@@ -7,7 +7,6 @@ use tokio::sync::mpsc;
 use crate::config::{self, AccountConfig, AuthMethod, Config};
 use crate::event::{Event, OAuthImportData};
 use crate::keyring_store::KeyringBackend;
-use crate::swap;
 
 #[derive(Debug, Clone)]
 pub struct UsageData {
@@ -282,46 +281,9 @@ impl AppState {
     fn swap_to_selected(&mut self) {
         if self.selected_index < self.accounts.len() {
             let name = self.accounts[self.selected_index].config.name.clone();
-            let auth_method = self.accounts[self.selected_index].config.auth_method.clone();
-
-            match &auth_method {
-                AuthMethod::OAuth => {
-                    match swap::swap_claude_code_credential(
-                        self.keyring.as_ref(),
-                        &name,
-                        &auth_method,
-                    ) {
-                        Ok(()) => {
-                            self.active_account_index = self.selected_index;
-                            self.save_config();
-                            self.set_status(format!("Swapped to '{}' — Claude Code will use it now", name));
-                        }
-                        Err(e) => {
-                            self.set_status(format!("Swap failed: {e}"));
-                        }
-                    }
-                }
-                AuthMethod::SessionKey => {
-                    let org_id = self.accounts[self.selected_index].config.org_id.clone();
-                    match self.keyring.get_session_key(&name) {
-                        Ok(session_key) => {
-                            match swap::write_active_session(&session_key, &org_id) {
-                                Ok(()) => {
-                                    self.active_account_index = self.selected_index;
-                                    self.save_config();
-                                    self.set_status(format!("Swapped to '{}'", name));
-                                }
-                                Err(e) => {
-                                    self.set_status(format!("Swap failed: {e}"));
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            self.set_status(format!("Cannot swap - {e}"));
-                        }
-                    }
-                }
-            }
+            self.active_account_index = self.selected_index;
+            self.save_config();
+            self.set_status(format!("Active: '{name}'"));
         }
     }
 }

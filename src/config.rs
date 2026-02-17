@@ -8,6 +8,8 @@ use crate::error::ConfigError;
 pub enum AuthMethod {
     #[default]
     SessionKey,
+    #[serde(alias = "o_auth")]
+    #[serde(rename = "oauth")]
     OAuth,
 }
 
