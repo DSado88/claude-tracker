@@ -127,9 +127,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
                 }
                 AccountStatus::Ok => {
                     if let Some(usage) = &account.usage {
-                        let h5_color = utilization_color(usage.utilization);
-                        let h5_pct = format!("{}%", usage.utilization);
-                        let h5_bar = progress_bar_line(usage.utilization, h5_color);
+                        let now = Utc::now();
+
+                        // If resets_at has passed, the server has reset the window —
+                        // show 0% locally instead of stale cached utilization.
+                        let h5_util = if usage.resets_at.map_or(false, |r| now > r) {
+                            0
+                        } else {
+                            usage.utilization
+                        };
+                        let h5_color = utilization_color(h5_util);
+                        let h5_pct = format!("{}%", h5_util);
+                        let h5_bar = progress_bar_line(h5_util, h5_color);
                         let h5_reset = usage
                             .resets_at
                             .as_ref()
@@ -138,15 +147,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
 
                         let (d7_pct, d7_bar, d7_reset, d7_color) =
                             if let Some(weekly_util) = usage.weekly_utilization {
-                                let color = utilization_color(weekly_util);
+                                let effective = if usage.weekly_resets_at.map_or(false, |r| now > r) {
+                                    0
+                                } else {
+                                    weekly_util
+                                };
+                                let color = utilization_color(effective);
                                 let reset = usage
                                     .weekly_resets_at
                                     .as_ref()
                                     .map(format_countdown)
                                     .unwrap_or_else(|| "--".to_string());
                                 (
-                                    format!("{}%", weekly_util),
-                                    progress_bar_line(weekly_util, color),
+                                    format!("{}%", effective),
+                                    progress_bar_line(effective, color),
                                     reset,
                                     color,
                                 )
