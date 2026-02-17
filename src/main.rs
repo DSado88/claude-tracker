@@ -41,8 +41,9 @@ async fn run() -> Result<()> {
     );
     let event_tx = events.sender();
 
-    // Initial fetch
+    // Initial fetch + detect logged-in account
     api::spawn_fetch_all(&app, &event_tx);
+    api::spawn_detect_logged_in(&app, &event_tx);
 
     let poll_interval = Duration::from_secs(app.poll_interval_secs);
     let mut last_poll = Instant::now();
@@ -62,6 +63,7 @@ async fn run() -> Result<()> {
             Event::Tick => {
                 if last_poll.elapsed() >= poll_interval {
                     api::spawn_fetch_all(&app, &event_tx);
+                    api::spawn_detect_logged_in(&app, &event_tx);
                     last_poll = Instant::now();
                 }
                 app.clear_stale_messages();
@@ -78,11 +80,15 @@ async fn run() -> Result<()> {
                         if let Some(idx) = app.import_oauth_account(data) {
                             api::spawn_fetch_one(&app, idx, &event_tx);
                         }
+                        api::spawn_detect_logged_in(&app, &event_tx);
                     }
                     Err(msg) => {
                         app.set_status(format!("Import failed: {msg}"));
                     }
                 }
+            }
+            Event::LoggedInDetected { account_name } => {
+                app.logged_in_account = account_name;
             }
             _ => {}
         }

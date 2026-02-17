@@ -167,25 +167,35 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
                         };
 
                         let _ = d7_color; // used for bar already
-                        // Show staleness: how long since last successful fetch
-                        let status_label = if let Some(fetched) = &account.last_fetched {
+
+                        let is_logged_in = app
+                            .logged_in_account
+                            .as_ref()
+                            .map(|n| n == &account.config.name)
+                            .unwrap_or(false);
+
+                        let status_cell = if is_logged_in {
+                            Cell::from(Span::styled(
+                                "Logged In",
+                                Style::default()
+                                    .fg(Color::Green)
+                                    .add_modifier(Modifier::BOLD),
+                            ))
+                        } else if let Some(fetched) = &account.last_fetched {
                             let ago = Utc::now().signed_duration_since(*fetched).num_minutes();
-                            if ago < 2 {
+                            let label = if ago < 2 {
                                 "Live".to_string()
                             } else if ago < 60 {
                                 format!("{}m ago", ago)
                             } else {
                                 format!("{}h ago", ago / 60)
-                            }
+                            };
+                            let color = if ago < 2 { Color::Gray } else { Color::Yellow };
+                            Cell::from(Span::styled(label, Style::default().fg(color)))
                         } else {
-                            "--".to_string()
+                            Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray)))
                         };
-                        let status_color = if let Some(fetched) = &account.last_fetched {
-                            let ago = Utc::now().signed_duration_since(*fetched).num_minutes();
-                            if ago < 2 { Color::Gray } else { Color::Yellow }
-                        } else {
-                            Color::DarkGray
-                        };
+
                         Row::new(vec![
                             Cell::from(Span::styled(num, Style::default().fg(h5_color))),
                             Cell::from(Span::styled(name, name_style)),
@@ -195,7 +205,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
                             Cell::from(Span::styled(d7_pct, Style::default().fg(d7_color))),
                             Cell::from(d7_bar),
                             Cell::from(Span::styled(d7_reset, Style::default().fg(Color::Gray))),
-                            Cell::from(Span::styled(status_label, Style::default().fg(status_color))),
+                            status_cell,
                         ])
                     } else {
                         Row::new(vec![

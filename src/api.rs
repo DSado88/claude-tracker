@@ -106,61 +106,64 @@ pub fn spawn_oauth_import(tx: &mpsc::UnboundedSender<Event>) {
 }
 
 async fn do_oauth_import() -> anyhow::Result<crate::event::OAuthImportData> {
-    let log = |msg: &str| {
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/claude-tracker-debug.log")
-            .and_then(|mut f| {
-                use std::io::Write;
-                writeln!(f, "[{}] {}", chrono::Utc::now(), msg)
-            });
-    };
-
-    log("Starting OAuth import...");
-
     // Read Claude Code's credentials from macOS Keychain
-    let cred = match oauth::read_claude_code_keychain() {
-        Ok(c) => {
-            log(&format!("Keychain read OK, expires_at={}", c.expires_at));
-            c
-        }
-        Err(e) => {
-            log(&format!("Keychain read FAILED: {e}"));
-            return Err(e);
-        }
-    };
+    let cred = oauth::read_claude_code_keychain()?;
 
     // We don't refresh tokens ourselves to avoid token stripping detection.
     if cred.needs_refresh() {
-        log("Token needs refresh — rejecting import");
         return Err(anyhow::anyhow!(
             "Token expired. Use Claude Code first (any command), then press 'i' again"
         ));
     }
 
-    log("Fetching profile...");
     // Fetch profile to identify the account
-    let profile = match oauth::fetch_profile(&cred.access_token).await {
-        Ok(p) => {
-            log(&format!("Profile OK: email={}, org={}", p.email, p.org_id));
-            p
-        }
-        Err(e) => {
-            log(&format!("Profile fetch FAILED: {e}"));
-            return Err(e);
-        }
-    };
+    let profile = oauth::fetch_profile(&cred.access_token).await?;
 
     // Serialize credential for storage in our keyring
     let credential_json = serde_json::to_string(&cred)?;
-    log(&format!("Import complete for '{}'", profile.email));
 
     Ok(crate::event::OAuthImportData {
         name: profile.email,
         org_id: profile.org_id,
         credential_json,
     })
+}
+
+/// Detect which account matches the token currently in Claude Code's keychain.
+/// Compares access tokens locally — no API calls.
+pub fn spawn_detect_logged_in(app: &AppState, tx: &mpsc::UnboundedSender<Event>) {
+    let tx = tx.clone();
+    let keyring = app.keyring.clone();
+    let oauth_accounts: Vec<String> = app
+        .accounts
+        .iter()
+        .filter(|a| a.config.auth_method == AuthMethod::OAuth)
+        .map(|a| a.config.name.clone())
+        .collect();
+
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            let cc_cred = oauth::read_claude_code_keychain().ok()?;
+            for name in &oauth_accounts {
+                if let Ok(stored_json) = keyring.get_session_key(name) {
+                    if let Ok(stored_cred) =
+                        serde_json::from_str::<oauth::OAuthCredential>(&stored_json)
+                    {
+                        if stored_cred.access_token == cc_cred.access_token {
+                            return Some(name.clone());
+                        }
+                    }
+                }
+            }
+            None
+        })
+        .await
+        .unwrap_or(None);
+
+        let _ = tx.send(Event::LoggedInDetected {
+            account_name: result,
+        });
+    });
 }
 
 async fn fetch_usage_session_key(session_key: &str, org_id: &str) -> anyhow::Result<UsageData> {

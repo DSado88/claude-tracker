@@ -19,6 +19,9 @@ pub enum Event {
     OAuthImportResult {
         result: Result<OAuthImportData, String>,
     },
+    LoggedInDetected {
+        account_name: Option<String>,
+    },
     Resize(u16, u16),
 }
 

@@ -91,6 +91,8 @@ pub struct AppState {
     pub input_fields: InputFields,
     pub poll_interval_secs: u64,
     pub keyring: Arc<dyn KeyringBackend>,
+    /// Which account name matches the token currently in Claude Code's keychain.
+    pub logged_in_account: Option<String>,
     config: Config,
 }
 
@@ -118,6 +120,7 @@ impl AppState {
             last_poll: None,
             status_message: None,
             input_fields: InputFields::default(),
+            logged_in_account: None,
             poll_interval_secs: config.settings.poll_interval_secs,
             keyring,
             config,
@@ -329,6 +332,7 @@ fn handle_normal_key(
         }
         KeyCode::Char('r') => {
             crate::api::spawn_fetch_all(app, tx);
+            crate::api::spawn_detect_logged_in(app, tx);
             app.set_status("Refreshing...".to_string());
         }
         KeyCode::Char('R') => {
