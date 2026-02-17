@@ -17,8 +17,9 @@ Built with Rust + [ratatui](https://github.com/ratatui/ratatui). Designed for pe
 1. **Import accounts** from Claude Code's OAuth tokens (stored in macOS Keychain)
 2. **Monitor all accounts simultaneously** — usage percentages update every 3 minutes
 3. **Countdown timers tick locally** — once fetched, reset times are accurate without re-polling
-4. **Logged In detection** — shows which account matches Claude Code's current keychain token
-5. **Mark active account** — cosmetic marker for which account you intend to use
+4. **Auto-clear on reset** — when a countdown expires, usage drops to 0% immediately (no poll needed)
+5. **Logged In detection** — shows which account matches Claude Code's current keychain token
+6. **Mark active account** — cosmetic marker for which account you intend to use
 
 ## Security & Token Handling
 
