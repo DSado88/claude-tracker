@@ -127,6 +127,24 @@ pub async fn fetch_oauth_usage(access_token: &str) -> anyhow::Result<UsageData> 
     })
 }
 
+/// Extract the access token from a stored keyring value.
+/// Handles both the old JSON format ({"access_token":"...","refresh_token":"...",...})
+/// and the new plain-string format.
+pub(crate) fn normalize_stored_token(raw: &str) -> String {
+    if raw.starts_with('{') {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) {
+            if let Some(token) = value
+                .get("access_token")
+                .or_else(|| value.get("accessToken"))
+                .and_then(|v| v.as_str())
+            {
+                return token.to_string();
+            }
+        }
+    }
+    raw.to_string()
+}
+
 pub(crate) fn parse_utilization(bucket: &serde_json::Value) -> u32 {
     bucket
         .get("utilization")
@@ -175,5 +193,16 @@ mod tests {
     fn parse_access_token_missing_returns_error() {
         let json = r#"{"claudeAiOauth":{"refreshToken":"ref"}}"#;
         assert!(parse_access_token(json).is_err());
+    }
+
+    #[test]
+    fn normalize_old_json_format() {
+        let old = r#"{"access_token":"eyJtoken","refresh_token":"rt-xxx","expires_at":0}"#;
+        assert_eq!(normalize_stored_token(old), "eyJtoken");
+    }
+
+    #[test]
+    fn normalize_plain_token_passthrough() {
+        assert_eq!(normalize_stored_token("eyJplaintoken"), "eyJplaintoken");
     }
 }

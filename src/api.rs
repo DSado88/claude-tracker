@@ -72,9 +72,10 @@ async fn fetch_account_usage(
             fetch_usage_session_key(&session_key, org_id).await
         }
         AuthMethod::OAuth => {
-            let token = keyring
+            let raw = keyring
                 .get_session_key(account_name)
                 .map_err(|e| format!("{e:#}"))?;
+            let token = oauth::normalize_stored_token(&raw);
             oauth::fetch_oauth_usage(&token).await
         }
     };
@@ -123,8 +124,8 @@ pub fn spawn_detect_logged_in(app: &AppState, tx: &mpsc::UnboundedSender<Event>)
         let result = tokio::task::spawn_blocking(move || {
             let cc_token = oauth::read_claude_code_access_token().ok()?;
             for name in &oauth_accounts {
-                if let Ok(stored_token) = keyring.get_session_key(name) {
-                    if stored_token == cc_token {
+                if let Ok(raw) = keyring.get_session_key(name) {
+                    if oauth::normalize_stored_token(&raw) == cc_token {
                         return Some(name.clone());
                     }
                 }
