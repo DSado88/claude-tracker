@@ -13,6 +13,8 @@ use crate::swap;
 pub struct UsageData {
     pub utilization: u32,
     pub resets_at: Option<DateTime<Utc>>,
+    pub weekly_utilization: Option<u32>,
+    pub weekly_resets_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -603,6 +605,8 @@ mod tests {
         let bobs_usage = UsageData {
             utilization: 99,
             resets_at: None,
+            weekly_utilization: None,
+            weekly_resets_at: None,
         };
         app.apply_usage_result("Bob", Ok(bobs_usage));
 

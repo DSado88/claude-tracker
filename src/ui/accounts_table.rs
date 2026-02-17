@@ -22,23 +22,30 @@ fn utilization_color(pct: u32) -> Color {
     }
 }
 
-fn progress_bar(pct: u32) -> String {
+fn progress_bar_line(pct: u32, color: Color) -> Line<'static> {
     let filled = if pct == 0 {
         0
     } else if pct >= 100 {
         10
     } else {
-        ((pct * 10 + 50) / 100).clamp(0, 10)
+        ((pct * 10 + 50) / 100).clamp(1, 10) as usize
     };
     let empty = 10 - filled;
-    let mut bar = String::new();
-    for _ in 0..filled {
-        bar.push('\u{2593}'); // ▓
-    }
-    for _ in 0..empty {
-        bar.push('\u{2591}'); // ░
-    }
-    bar
+
+    let filled_str: String = "\u{2588}".repeat(filled);
+    let empty_str: String = "\u{2591}".repeat(empty);
+
+    Line::from(vec![
+        Span::styled(filled_str, Style::default().fg(color)),
+        Span::styled(empty_str, Style::default().fg(Color::Indexed(238))),
+    ])
+}
+
+fn empty_bar_line() -> Line<'static> {
+    Line::from(Span::styled(
+        "\u{2500}".repeat(10),
+        Style::default().fg(Color::Indexed(238)),
+    ))
 }
 
 fn format_countdown(resets_at: &chrono::DateTime<Utc>) -> String {
@@ -50,10 +57,13 @@ fn format_countdown(resets_at: &chrono::DateTime<Utc>) -> String {
         return "now".to_string();
     }
 
-    let hours = total_secs / 3600;
+    let days = total_secs / 86400;
+    let hours = (total_secs % 86400) / 3600;
     let mins = (total_secs % 3600) / 60;
 
-    if hours > 0 {
+    if days > 0 {
+        format!("{}d {}h", days, hours)
+    } else if hours > 0 {
         format!("{}h {:02}m", hours, mins)
     } else {
         format!("{}m", mins)
@@ -64,9 +74,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
     let header = Row::new(vec![
         Cell::from(" # "),
         Cell::from("Name"),
-        Cell::from("Usage"),
-        Cell::from("Bar"),
-        Cell::from("Resets In"),
+        Cell::from("5h %"),
+        Cell::from("5h Bar"),
+        Cell::from("5h Reset"),
+        Cell::from("7d %"),
+        Cell::from("7d Bar"),
+        Cell::from("7d Reset"),
         Cell::from("Status"),
     ])
     .style(
@@ -92,80 +105,112 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
                 account.config.name.clone()
             };
 
-            let (usage_text, bar_text, resets_text, status_text, row_color) =
-                match &account.status {
-                    AccountStatus::Idle => (
-                        "--".to_string(),
-                        "----------".to_string(),
-                        "--".to_string(),
-                        "Idle".to_string(),
-                        Color::DarkGray,
-                    ),
-                    AccountStatus::Fetching => (
-                        "...".to_string(),
-                        "----------".to_string(),
-                        "--".to_string(),
-                        "...".to_string(),
-                        Color::DarkGray,
-                    ),
-                    AccountStatus::Ok => {
-                        if let Some(usage) = &account.usage {
-                            let color = utilization_color(usage.utilization);
-                            let resets = usage
-                                .resets_at
-                                .as_ref()
-                                .map(format_countdown)
-                                .unwrap_or_else(|| "--".to_string());
-                            (
-                                format!("{}%", usage.utilization),
-                                progress_bar(usage.utilization),
-                                resets,
-                                "OK".to_string(),
-                                color,
-                            )
+            match &account.status {
+                AccountStatus::Idle | AccountStatus::Fetching => {
+                    let label = if account.status == AccountStatus::Idle {
+                        "Idle"
+                    } else {
+                        "..."
+                    };
+                    Row::new(vec![
+                        Cell::from(Span::styled(num, Style::default().fg(Color::DarkGray))),
+                        Cell::from(Span::styled(name, Style::default().fg(Color::DarkGray))),
+                        Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray))),
+                        Cell::from(empty_bar_line()),
+                        Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray))),
+                        Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray))),
+                        Cell::from(empty_bar_line()),
+                        Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray))),
+                        Cell::from(Span::styled(label, Style::default().fg(Color::DarkGray))),
+                    ])
+                }
+                AccountStatus::Ok => {
+                    if let Some(usage) = &account.usage {
+                        let h5_color = utilization_color(usage.utilization);
+                        let h5_pct = format!("{}%", usage.utilization);
+                        let h5_bar = progress_bar_line(usage.utilization, h5_color);
+                        let h5_reset = usage
+                            .resets_at
+                            .as_ref()
+                            .map(format_countdown)
+                            .unwrap_or_else(|| "--".to_string());
+
+                        let (d7_pct, d7_bar, d7_reset, d7_color) =
+                            if let Some(weekly_util) = usage.weekly_utilization {
+                                let color = utilization_color(weekly_util);
+                                let reset = usage
+                                    .weekly_resets_at
+                                    .as_ref()
+                                    .map(format_countdown)
+                                    .unwrap_or_else(|| "--".to_string());
+                                (
+                                    format!("{}%", weekly_util),
+                                    progress_bar_line(weekly_util, color),
+                                    reset,
+                                    color,
+                                )
+                            } else {
+                                (
+                                    "--".to_string(),
+                                    empty_bar_line(),
+                                    "--".to_string(),
+                                    Color::DarkGray,
+                                )
+                            };
+
+                        let name_style = if is_selected {
+                            Style::default()
+                                .fg(h5_color)
+                                .add_modifier(Modifier::BOLD)
                         } else {
-                            (
-                                "--".to_string(),
-                                "----------".to_string(),
-                                "--".to_string(),
-                                "OK".to_string(),
-                                Color::DarkGray,
-                            )
-                        }
-                    }
-                    AccountStatus::Error(msg) => {
-                        let short = if msg.len() > 20 {
-                            format!("{}...", &msg[..17])
-                        } else {
-                            msg.clone()
+                            Style::default().fg(h5_color)
                         };
-                        (
-                            "--".to_string(),
-                            "----------".to_string(),
-                            "--".to_string(),
-                            short,
-                            Color::Red,
-                        )
+
+                        let _ = d7_color; // used for bar already
+                        Row::new(vec![
+                            Cell::from(Span::styled(num, Style::default().fg(h5_color))),
+                            Cell::from(Span::styled(name, name_style)),
+                            Cell::from(Span::styled(h5_pct, Style::default().fg(h5_color))),
+                            Cell::from(h5_bar),
+                            Cell::from(Span::styled(h5_reset, Style::default().fg(Color::Gray))),
+                            Cell::from(Span::styled(d7_pct, Style::default().fg(d7_color))),
+                            Cell::from(d7_bar),
+                            Cell::from(Span::styled(d7_reset, Style::default().fg(Color::Gray))),
+                            Cell::from(Span::styled("OK", Style::default().fg(Color::Gray))),
+                        ])
+                    } else {
+                        Row::new(vec![
+                            Cell::from(Span::styled(num, Style::default().fg(Color::DarkGray))),
+                            Cell::from(Span::styled(name, Style::default().fg(Color::DarkGray))),
+                            Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray))),
+                            Cell::from(empty_bar_line()),
+                            Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray))),
+                            Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray))),
+                            Cell::from(empty_bar_line()),
+                            Cell::from(Span::styled("--", Style::default().fg(Color::DarkGray))),
+                            Cell::from(Span::styled("OK", Style::default().fg(Color::Gray))),
+                        ])
                     }
-                };
-
-            let style = if is_selected {
-                Style::default()
-                    .fg(row_color)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(row_color)
-            };
-
-            Row::new(vec![
-                Cell::from(num),
-                Cell::from(name),
-                Cell::from(usage_text),
-                Cell::from(bar_text),
-                Cell::from(resets_text),
-                Cell::from(status_text),
-            ])
-            .style(style)
+                }
+                AccountStatus::Error(msg) => {
+                    let short = if msg.len() > 30 {
+                        format!("{}...", &msg[..27])
+                    } else {
+                        msg.clone()
+                    };
+                    Row::new(vec![
+                        Cell::from(Span::styled(num, Style::default().fg(Color::Red))),
+                        Cell::from(Span::styled(name, Style::default().fg(Color::Red))),
+                        Cell::from(Span::styled("--", Style::default().fg(Color::Red))),
+                        Cell::from(empty_bar_line()),
+                        Cell::from(Span::styled("--", Style::default().fg(Color::Red))),
+                        Cell::from(Span::styled("--", Style::default().fg(Color::Red))),
+                        Cell::from(empty_bar_line()),
+                        Cell::from(Span::styled("--", Style::default().fg(Color::Red))),
+                        Cell::from(Span::styled(short, Style::default().fg(Color::Red))),
+                    ])
+                }
+            }
         })
         .collect();
 
@@ -187,12 +232,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
     };
 
     let widths = [
-        Constraint::Length(4),
-        Constraint::Length(16),
-        Constraint::Length(7),
-        Constraint::Length(12),
-        Constraint::Length(10),
-        Constraint::Min(8),
+        Constraint::Length(4),  // #
+        Constraint::Length(16), // Name
+        Constraint::Length(5),  // 5h %
+        Constraint::Length(12), // 5h Bar
+        Constraint::Length(9),  // 5h Reset
+        Constraint::Length(5),  // 7d %
+        Constraint::Length(12), // 7d Bar
+        Constraint::Length(9),  // 7d Reset
+        Constraint::Min(8),    // Status
     ];
 
     let table = Table::new(display_rows, widths)
