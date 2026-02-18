@@ -87,9 +87,15 @@ After importing, all accounts poll independently. Access tokens persist in your 
 | **Logged In** | This account's token matches Claude Code's current keychain entry |
 | **Live** | Data fetched within the last 2 minutes |
 | **5m ago** | Data is stale (last fetched 5 minutes ago) |
+| **Expired — re-import (i)** | Token expired (401/403) |
+| **Rate limited — try later** | API rate limit hit (429) |
+| **Timeout** | Request timed out |
+| **No network** | DNS or connection failure |
 | **--** | No data fetched yet |
 
 "Logged In" tells you which account Claude Code will use for new sessions. Note that existing Claude Code windows keep their token in memory — they'll keep using whatever account they were started with until you `/login` again in that window.
+
+Tokens are cached in memory at startup — the app only reads from macOS Keychain once per launch, so you won't get repeated password prompts.
 
 ## Keybindings
 
