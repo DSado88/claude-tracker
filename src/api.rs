@@ -1,4 +1,4 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -20,12 +20,12 @@ pub fn spawn_fetch_all(app: &AppState, tx: &mpsc::UnboundedSender<Event>) {
         let account_name = account.config.name.clone();
         let org_id = account.config.org_id.clone();
         let auth_method = account.config.auth_method.clone();
-        let keyring = app.keyring.clone();
+        let cached_token = account.cached_token.clone();
         let stagger = Duration::from_millis(100 * i as u64);
 
         tokio::spawn(async move {
             tokio::time::sleep(stagger).await;
-            let result = fetch_account_usage(&account_name, &org_id, &auth_method, &keyring).await;
+            let result = fetch_account_usage(&org_id, &auth_method, cached_token.as_deref()).await;
             let _ = tx.send(Event::UsageResult {
                 account_name,
                 result,
@@ -44,10 +44,10 @@ pub fn spawn_fetch_one(
         let account_name = account.config.name.clone();
         let org_id = account.config.org_id.clone();
         let auth_method = account.config.auth_method.clone();
-        let keyring = app.keyring.clone();
+        let cached_token = account.cached_token.clone();
 
         tokio::spawn(async move {
-            let result = fetch_account_usage(&account_name, &org_id, &auth_method, &keyring).await;
+            let result = fetch_account_usage(&org_id, &auth_method, cached_token.as_deref()).await;
             let _ = tx.send(Event::UsageResult {
                 account_name,
                 result,
@@ -56,26 +56,21 @@ pub fn spawn_fetch_one(
     }
 }
 
-/// Shared fetch logic for both spawn_fetch_all and spawn_fetch_one.
+/// Shared fetch logic. Uses cached token from memory — no keychain reads.
 async fn fetch_account_usage(
-    account_name: &str,
     org_id: &str,
     auth_method: &AuthMethod,
-    keyring: &Arc<dyn crate::keyring_store::KeyringBackend>,
+    cached_token: Option<&str>,
 ) -> Result<UsageData, String> {
+    let token = cached_token
+        .ok_or_else(|| "No token cached — re-import (i)".to_string())?;
     let result = match auth_method {
         AuthMethod::SessionKey => {
-            let session_key = keyring
-                .get_session_key(account_name)
-                .map_err(|e| format!("{e:#}"))?;
-            fetch_usage_session_key(&session_key, org_id).await
+            fetch_usage_session_key(token, org_id).await
         }
         AuthMethod::OAuth => {
-            let raw = keyring
-                .get_session_key(account_name)
-                .map_err(|e| format!("{e:#}"))?;
-            let token = oauth::normalize_stored_token(&raw);
-            oauth::fetch_oauth_usage(&token).await
+            let normalized = oauth::normalize_stored_token(token);
+            oauth::fetch_oauth_usage(&normalized).await
         }
     };
     result.map_err(|e| humanize_error(&e))
@@ -124,25 +119,26 @@ async fn do_oauth_import() -> anyhow::Result<crate::event::OAuthImportData> {
 }
 
 /// Detect which account matches the token currently in Claude Code's keychain.
-/// Compares access tokens locally — no API calls.
+/// Compares cached tokens in memory — only one `security` CLI call for Claude Code's keychain.
 pub fn spawn_detect_logged_in(app: &AppState, tx: &mpsc::UnboundedSender<Event>) {
     let tx = tx.clone();
-    let keyring = app.keyring.clone();
-    let oauth_accounts: Vec<String> = app
+    let oauth_accounts: Vec<(String, String)> = app
         .accounts
         .iter()
         .filter(|a| a.config.auth_method == AuthMethod::OAuth)
-        .map(|a| a.config.name.clone())
+        .filter_map(|a| {
+            a.cached_token.as_ref().map(|t| {
+                (a.config.name.clone(), oauth::normalize_stored_token(t))
+            })
+        })
         .collect();
 
     tokio::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
             let cc_token = oauth::read_claude_code_access_token().ok()?;
-            for name in &oauth_accounts {
-                if let Ok(raw) = keyring.get_session_key(name) {
-                    if oauth::normalize_stored_token(&raw) == cc_token {
-                        return Some(name.clone());
-                    }
+            for (name, token) in &oauth_accounts {
+                if *token == cc_token {
+                    return Some(name.clone());
                 }
             }
             None

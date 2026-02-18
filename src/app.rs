@@ -29,6 +29,8 @@ pub struct AccountState {
     pub usage: Option<UsageData>,
     pub status: AccountStatus,
     pub last_fetched: Option<DateTime<Utc>>,
+    /// Cached token loaded from keyring at startup/import — avoids keychain prompts on every poll.
+    pub cached_token: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,11 +101,15 @@ impl AppState {
         let accounts: Vec<AccountState> = config
             .accounts
             .iter()
-            .map(|ac| AccountState {
-                config: ac.clone(),
-                usage: None,
-                status: AccountStatus::Idle,
-                last_fetched: None,
+            .map(|ac| {
+                let cached_token = keyring.get_session_key(&ac.name).ok();
+                AccountState {
+                    config: ac.clone(),
+                    usage: None,
+                    status: AccountStatus::Idle,
+                    last_fetched: None,
+                    cached_token,
+                }
             })
             .collect();
 
@@ -198,6 +204,7 @@ impl AppState {
             usage: None,
             status: AccountStatus::Idle,
             last_fetched: None,
+            cached_token: Some(session_key),
         });
         self.save_config();
         self.set_status("Account added".to_string());
@@ -229,6 +236,7 @@ impl AppState {
         if let Some(account) = self.accounts.get_mut(index) {
             account.config.name = name;
             account.config.org_id = org_id;
+            account.cached_token = Some(session_key);
             account.usage = None;
             account.status = AccountStatus::Idle;
         }
@@ -274,6 +282,7 @@ impl AppState {
         if let Some(pos) = self.accounts.iter().position(|a| a.config.name == data.name) {
             self.accounts[pos].config.org_id = data.org_id;
             self.accounts[pos].config.auth_method = AuthMethod::OAuth;
+            self.accounts[pos].cached_token = Some(data.access_token);
             self.accounts[pos].usage = None;
             self.accounts[pos].status = AccountStatus::Idle;
             self.save_config();
@@ -292,6 +301,7 @@ impl AppState {
             usage: None,
             status: AccountStatus::Idle,
             last_fetched: None,
+            cached_token: Some(data.access_token),
         });
         self.save_config();
         self.set_status(format!("Imported OAuth account '{}'", data.name));
@@ -362,16 +372,9 @@ fn handle_normal_key(
         }
         KeyCode::Char('e') => {
             if let Some(account) = app.accounts.get(app.selected_index) {
-                let name = account.config.name.clone();
-                app.input_fields.name = name.clone();
+                app.input_fields.name = account.config.name.clone();
                 app.input_fields.org_id = account.config.org_id.clone();
-                app.input_fields.session_key = match app.keyring.get_session_key(&name) {
-                    Ok(key) => key,
-                    Err(e) => {
-                        app.set_status(format!("Keyring read failed: {e}"));
-                        String::new()
-                    }
-                };
+                app.input_fields.session_key = account.cached_token.clone().unwrap_or_default();
                 app.input_fields.focused_field = 0;
                 app.mode = AppMode::EditAccount(app.selected_index);
             }
