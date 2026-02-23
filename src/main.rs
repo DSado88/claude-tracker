@@ -76,9 +76,11 @@ async fn run() -> Result<()> {
             }
             Event::OAuthImportResult { result } => {
                 match result {
-                    Ok(data) => {
-                        if let Some(idx) = app.import_oauth_account(data) {
-                            api::spawn_fetch_one(&app, idx, &event_tx);
+                    Ok(accounts) => {
+                        for data in accounts {
+                            if let Some(idx) = app.import_oauth_account(data) {
+                                api::spawn_fetch_one(&app, idx, &event_tx);
+                            }
                         }
                         api::spawn_detect_logged_in(&app, &event_tx);
                     }

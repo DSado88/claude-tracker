@@ -14,22 +14,79 @@ pub struct OAuthProfile {
     pub org_id: String,
 }
 
-/// Read Claude Code's access token from macOS Keychain via `security` CLI.
+/// Read Claude Code's access token from the default macOS Keychain entry.
 pub fn read_claude_code_access_token() -> anyhow::Result<String> {
+    read_keychain_token("Claude Code-credentials")
+}
+
+/// Read all Claude Code access tokens from macOS Keychain.
+///
+/// Claude Code uses per-config-directory keychain entries:
+/// - Default: `"Claude Code-credentials"`
+/// - Alternate: `"Claude Code-credentials-{hash}"` where hash = first 8 chars of sha256(config_dir)
+///
+/// Returns deduplicated tokens (different entries can share a token).
+pub fn read_all_claude_code_tokens() -> anyhow::Result<Vec<String>> {
+    let service_names = discover_credential_services()?;
+    if service_names.is_empty() {
+        return Err(anyhow::anyhow!(
+            "No Claude Code credentials found. Log into Claude Code first."
+        ));
+    }
+
+    let mut tokens = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for svc in &service_names {
+        if let Ok(token) = read_keychain_token(svc) {
+            if seen.insert(token.clone()) {
+                tokens.push(token);
+            }
+        }
+    }
+
+    if tokens.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Found {} keychain entries but none contained a valid token.",
+            service_names.len()
+        ));
+    }
+    Ok(tokens)
+}
+
+/// Discover all `Claude Code-credentials*` service names in the login keychain.
+fn discover_credential_services() -> anyhow::Result<Vec<String>> {
     let output = std::process::Command::new("security")
-        .args([
-            "find-generic-password",
-            "-s",
-            "Claude Code-credentials",
-            "-w",
-        ])
+        .args(["dump-keychain"])
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run security dump-keychain: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut services = Vec::new();
+    for line in stdout.lines() {
+        // Lines look like: "svce"<blob>="Claude Code-credentials"
+        if let Some(rest) = line.strip_prefix("    \"svce\"<blob>=\"") {
+            if let Some(name) = rest.strip_suffix('"') {
+                if name.starts_with("Claude Code-credentials") {
+                    services.push(name.to_string());
+                }
+            }
+        }
+    }
+    services.dedup();
+    Ok(services)
+}
+
+/// Read a single access token from a specific keychain service name.
+fn read_keychain_token(service: &str) -> anyhow::Result<String> {
+    let output = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", service, "-w"])
         .output()
         .map_err(|e| anyhow::anyhow!("Failed to run security command: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow::anyhow!(
-            "No Claude Code credentials found. Log into Claude Code first. ({stderr})"
+            "No credentials found for service '{service}'. ({stderr})"
         ));
     }
 
