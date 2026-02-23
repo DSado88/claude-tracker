@@ -29,6 +29,8 @@ pub struct AccountState {
     pub usage: Option<UsageData>,
     pub status: AccountStatus,
     pub last_fetched: Option<DateTime<Utc>>,
+    /// Cached token loaded from keyring at startup/import — avoids keychain prompts on every poll.
+    pub cached_token: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,11 +101,15 @@ impl AppState {
         let accounts: Vec<AccountState> = config
             .accounts
             .iter()
-            .map(|ac| AccountState {
-                config: ac.clone(),
-                usage: None,
-                status: AccountStatus::Idle,
-                last_fetched: None,
+            .map(|ac| {
+                let cached_token = keyring.get_session_key(&ac.name).ok();
+                AccountState {
+                    config: ac.clone(),
+                    usage: None,
+                    status: AccountStatus::Idle,
+                    last_fetched: None,
+                    cached_token,
+                }
             })
             .collect();
 
@@ -178,6 +184,11 @@ impl AppState {
 
     /// Returns Some(index) on success, None on failure.
     fn add_account(&mut self, name: String, session_key: String, org_id: String) -> Option<usize> {
+        if self.accounts.iter().any(|a| a.config.name == name) {
+            self.set_status(format!("Account '{}' already exists", name));
+            return None;
+        }
+
         if let Err(e) = self.keyring.set_session_key(&name, &session_key) {
             self.set_status(format!("Keyring error: {e}"));
             return None;
@@ -193,6 +204,7 @@ impl AppState {
             usage: None,
             status: AccountStatus::Idle,
             last_fetched: None,
+            cached_token: Some(session_key),
         });
         self.save_config();
         self.set_status("Account added".to_string());
@@ -224,6 +236,7 @@ impl AppState {
         if let Some(account) = self.accounts.get_mut(index) {
             account.config.name = name;
             account.config.org_id = org_id;
+            account.cached_token = Some(session_key);
             account.usage = None;
             account.status = AccountStatus::Idle;
         }
@@ -269,6 +282,7 @@ impl AppState {
         if let Some(pos) = self.accounts.iter().position(|a| a.config.name == data.name) {
             self.accounts[pos].config.org_id = data.org_id;
             self.accounts[pos].config.auth_method = AuthMethod::OAuth;
+            self.accounts[pos].cached_token = Some(data.access_token);
             self.accounts[pos].usage = None;
             self.accounts[pos].status = AccountStatus::Idle;
             self.save_config();
@@ -287,6 +301,7 @@ impl AppState {
             usage: None,
             status: AccountStatus::Idle,
             last_fetched: None,
+            cached_token: Some(data.access_token),
         });
         self.save_config();
         self.set_status(format!("Imported OAuth account '{}'", data.name));
@@ -357,16 +372,9 @@ fn handle_normal_key(
         }
         KeyCode::Char('e') => {
             if let Some(account) = app.accounts.get(app.selected_index) {
-                let name = account.config.name.clone();
-                app.input_fields.name = name.clone();
+                app.input_fields.name = account.config.name.clone();
                 app.input_fields.org_id = account.config.org_id.clone();
-                app.input_fields.session_key = match app.keyring.get_session_key(&name) {
-                    Ok(key) => key,
-                    Err(e) => {
-                        app.set_status(format!("Keyring read failed: {e}"));
-                        String::new()
-                    }
-                };
+                app.input_fields.session_key = account.cached_token.clone().unwrap_or_default();
                 app.input_fields.focused_field = 0;
                 app.mode = AppMode::EditAccount(app.selected_index);
             }
@@ -795,6 +803,253 @@ mod tests {
         assert!(
             app.last_poll.is_some(),
             "last_poll should be updated when result is applied to an existing account"
+        );
+    }
+
+    // =========================================================================
+    // INVARIANT: Error preserves existing usage data.
+    //
+    // This is the foundation of the "keep timers alive" feature. When a fetch
+    // fails (e.g. token expired), the Err branch must NOT clear account.usage.
+    // The UI relies on usage data surviving errors to keep showing countdowns.
+    // =========================================================================
+    #[test]
+    fn error_preserves_existing_usage_data() {
+        let mock = Arc::new(MockKeyring::new());
+        let mut app = test_app(&["Alice"], mock);
+
+        // First fetch succeeds — usage data is stored
+        let usage = UsageData {
+            utilization: 75,
+            resets_at: Some(Utc::now() + chrono::Duration::hours(3)),
+            weekly_utilization: Some(40),
+            weekly_resets_at: Some(Utc::now() + chrono::Duration::days(5)),
+        };
+        app.apply_usage_result("Alice", Ok(usage));
+
+        assert_eq!(app.accounts[0].usage.as_ref().unwrap().utilization, 75);
+        assert_eq!(app.accounts[0].status, AccountStatus::Ok);
+
+        // Second fetch fails — token expired
+        app.apply_usage_result("Alice", Err("Expired — re-import (i)".to_string()));
+
+        // Status is Error, but usage data MUST still be present
+        assert!(
+            matches!(app.accounts[0].status, AccountStatus::Error(_)),
+            "Status should be Error"
+        );
+        assert!(
+            app.accounts[0].usage.is_some(),
+            "Usage data must survive an error — timers depend on this"
+        );
+        assert_eq!(
+            app.accounts[0].usage.as_ref().unwrap().utilization,
+            75,
+            "Utilization must be unchanged after error"
+        );
+        assert!(
+            app.accounts[0].usage.as_ref().unwrap().resets_at.is_some(),
+            "resets_at must survive error — countdown timers depend on this"
+        );
+        assert_eq!(
+            app.accounts[0].usage.as_ref().unwrap().weekly_utilization,
+            Some(40),
+            "Weekly utilization must survive error"
+        );
+    }
+
+    // =========================================================================
+    // INVARIANT: Multiple consecutive errors don't erode usage data.
+    //
+    // If the token stays expired for hours, every poll cycle produces an error.
+    // Usage data must survive all of them. The timers tick locally and auto-
+    // clear to 0% when resets_at passes — no fresh fetch needed.
+    // =========================================================================
+    #[test]
+    fn consecutive_errors_preserve_usage() {
+        let mock = Arc::new(MockKeyring::new());
+        let mut app = test_app(&["Alice"], mock);
+
+        // Successful fetch
+        let usage = UsageData {
+            utilization: 100,
+            resets_at: Some(Utc::now() + chrono::Duration::hours(1)),
+            weekly_utilization: Some(88),
+            weekly_resets_at: Some(Utc::now() + chrono::Duration::days(3)),
+        };
+        app.apply_usage_result("Alice", Ok(usage));
+
+        // 10 consecutive errors (simulating hours of expired token)
+        for i in 0..10 {
+            app.apply_usage_result("Alice", Err(format!("Expired attempt {}", i)));
+        }
+
+        assert!(
+            app.accounts[0].usage.is_some(),
+            "Usage must survive 10 consecutive errors"
+        );
+        assert_eq!(
+            app.accounts[0].usage.as_ref().unwrap().utilization,
+            100,
+            "Utilization unchanged after 10 errors"
+        );
+        assert!(
+            app.accounts[0].usage.as_ref().unwrap().resets_at.is_some(),
+            "resets_at survives 10 errors"
+        );
+    }
+
+    // =========================================================================
+    // INVARIANT: Success after error replaces stale data with fresh data.
+    //
+    // When the user re-imports and the next fetch succeeds, the old cached
+    // usage must be fully replaced — not merged or left stale.
+    // =========================================================================
+    #[test]
+    fn success_after_error_replaces_stale_usage() {
+        let mock = Arc::new(MockKeyring::new());
+        let mut app = test_app(&["Alice"], mock);
+
+        // Old successful fetch
+        let old_usage = UsageData {
+            utilization: 95,
+            resets_at: Some(Utc::now() + chrono::Duration::hours(1)),
+            weekly_utilization: Some(70),
+            weekly_resets_at: Some(Utc::now() + chrono::Duration::days(2)),
+        };
+        app.apply_usage_result("Alice", Ok(old_usage));
+
+        // Token expires, several errors
+        app.apply_usage_result("Alice", Err("Expired".to_string()));
+        app.apply_usage_result("Alice", Err("Expired".to_string()));
+
+        // User re-imports, new fetch succeeds with different data
+        let new_usage = UsageData {
+            utilization: 10,
+            resets_at: Some(Utc::now() + chrono::Duration::hours(5)),
+            weekly_utilization: Some(20),
+            weekly_resets_at: Some(Utc::now() + chrono::Duration::days(7)),
+        };
+        app.apply_usage_result("Alice", Ok(new_usage));
+
+        assert_eq!(app.accounts[0].status, AccountStatus::Ok);
+        assert_eq!(
+            app.accounts[0].usage.as_ref().unwrap().utilization,
+            10,
+            "Fresh utilization must replace stale 95%"
+        );
+        assert_eq!(
+            app.accounts[0].usage.as_ref().unwrap().weekly_utilization,
+            Some(20),
+            "Fresh weekly must replace stale 70%"
+        );
+    }
+
+    // =========================================================================
+    // EDGE CASE: First-ever fetch fails — no prior usage to preserve.
+    //
+    // Account just added/imported, first fetch fails immediately. There's no
+    // cached usage data. UI should show placeholder row, not panic.
+    // =========================================================================
+    #[test]
+    fn error_on_fresh_account_has_no_usage() {
+        let mock = Arc::new(MockKeyring::new());
+        let mut app = test_app(&["Alice"], mock);
+
+        // Precondition: brand new account, no usage
+        assert!(app.accounts[0].usage.is_none());
+
+        // First fetch fails
+        app.apply_usage_result("Alice", Err("No token cached — re-import (i)".to_string()));
+
+        assert!(
+            matches!(app.accounts[0].status, AccountStatus::Error(_)),
+            "Status should be Error"
+        );
+        assert!(
+            app.accounts[0].usage.is_none(),
+            "No phantom usage data should appear — there was nothing to preserve"
+        );
+    }
+
+    // =========================================================================
+    // EDGE CASE: last_fetched not updated on error.
+    //
+    // last_fetched tracks the last SUCCESSFUL fetch. Errors should not
+    // advance it. This matters if we recover to Ok — the staleness display
+    // in the status column should reflect when data was actually refreshed.
+    // =========================================================================
+    #[test]
+    fn last_fetched_not_advanced_by_error() {
+        let mock = Arc::new(MockKeyring::new());
+        let mut app = test_app(&["Alice"], mock);
+
+        // Successful fetch
+        let usage = UsageData {
+            utilization: 50,
+            resets_at: None,
+            weekly_utilization: None,
+            weekly_resets_at: None,
+        };
+        app.apply_usage_result("Alice", Ok(usage));
+
+        let fetched_after_success = app.accounts[0].last_fetched.unwrap();
+
+        // Error should not change last_fetched
+        app.apply_usage_result("Alice", Err("Expired".to_string()));
+
+        assert_eq!(
+            app.accounts[0].last_fetched.unwrap(),
+            fetched_after_success,
+            "last_fetched must not advance on error — it tracks last successful fetch"
+        );
+    }
+
+    // =========================================================================
+    // EDGE CASE: import_oauth_account wipes usage (intentionally).
+    //
+    // Re-importing clears usage + resets status to Idle. If the subsequent
+    // fetch fails, there's no stale data to show. This is by design — the
+    // old timers belong to a different token session.
+    // =========================================================================
+    #[test]
+    fn reimport_clears_usage_before_fresh_fetch() {
+        let mock = Arc::new(MockKeyring::new());
+        let mut app = test_app(&["Alice"], mock);
+        app.accounts[0].config.auth_method = AuthMethod::OAuth;
+
+        // Successful fetch populates usage
+        let usage = UsageData {
+            utilization: 80,
+            resets_at: Some(Utc::now() + chrono::Duration::hours(2)),
+            weekly_utilization: Some(60),
+            weekly_resets_at: None,
+        };
+        app.apply_usage_result("Alice", Ok(usage));
+        assert!(app.accounts[0].usage.is_some());
+
+        // User re-imports the same account with a fresh token
+        let import_data = OAuthImportData {
+            name: "Alice".to_string(),
+            org_id: "org-Alice".to_string(),
+            access_token: "fresh-token-xyz".to_string(),
+        };
+        app.import_oauth_account(import_data);
+
+        // Usage is wiped — old timers don't apply to the new token session
+        assert!(
+            app.accounts[0].usage.is_none(),
+            "Usage must be cleared on re-import"
+        );
+        assert_eq!(
+            app.accounts[0].status,
+            AccountStatus::Idle,
+            "Status must reset to Idle on re-import"
+        );
+        assert_eq!(
+            app.accounts[0].cached_token.as_deref(),
+            Some("fresh-token-xyz"),
+            "Cached token must be updated"
         );
     }
 }
