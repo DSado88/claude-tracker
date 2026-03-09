@@ -19,6 +19,13 @@ pub enum Event {
     OAuthImportResult {
         result: Result<Vec<OAuthImportData>, String>,
     },
+    TokenRefreshed {
+        account_name: String,
+        raw_credential: String,
+    },
+    OAuthLoginResult {
+        result: Result<OAuthImportData, String>,
+    },
     LoggedInDetected {
         account_name: Option<String>,
     },
@@ -29,7 +36,8 @@ pub enum Event {
 pub struct OAuthImportData {
     pub name: String,
     pub org_id: String,
-    pub access_token: String,
+    /// Raw credential JSON (contains access token, refresh token, expiry).
+    pub raw_credential: String,
 }
 
 pub struct EventHandler {

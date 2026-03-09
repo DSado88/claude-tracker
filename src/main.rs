@@ -89,6 +89,26 @@ async fn run() -> Result<()> {
                     }
                 }
             }
+            Event::OAuthLoginResult { result } => {
+                match result {
+                    Ok(data) => {
+                        let name = data.name.clone();
+                        if let Some(idx) = app.import_oauth_account(data) {
+                            api::spawn_fetch_one(&app, idx, &event_tx);
+                            app.set_status(format!("Logged in as '{name}'"));
+                        }
+                    }
+                    Err(msg) => {
+                        app.set_status(format!("Login failed: {msg}"));
+                    }
+                }
+            }
+            Event::TokenRefreshed {
+                account_name,
+                raw_credential,
+            } => {
+                app.apply_token_refresh(&account_name, raw_credential);
+            }
             Event::LoggedInDetected { account_name } => {
                 app.logged_in_account = account_name;
             }

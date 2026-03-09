@@ -25,11 +25,7 @@ pub fn spawn_fetch_all(app: &AppState, tx: &mpsc::UnboundedSender<Event>) {
 
         tokio::spawn(async move {
             tokio::time::sleep(stagger).await;
-            let result = fetch_account_usage(&org_id, &auth_method, cached_token.as_deref()).await;
-            let _ = tx.send(Event::UsageResult {
-                account_name,
-                result,
-            });
+            fetch_with_refresh(&tx, &account_name, &org_id, &auth_method, cached_token).await;
         });
     }
 }
@@ -47,13 +43,58 @@ pub fn spawn_fetch_one(
         let cached_token = account.cached_token.clone();
 
         tokio::spawn(async move {
-            let result = fetch_account_usage(&org_id, &auth_method, cached_token.as_deref()).await;
-            let _ = tx.send(Event::UsageResult {
-                account_name,
-                result,
-            });
+            fetch_with_refresh(&tx, &account_name, &org_id, &auth_method, cached_token).await;
         });
     }
+}
+
+/// Fetch usage, and if the token is expired (401), try refreshing before giving up.
+async fn fetch_with_refresh(
+    tx: &mpsc::UnboundedSender<Event>,
+    account_name: &str,
+    org_id: &str,
+    auth_method: &AuthMethod,
+    cached_token: Option<String>,
+) {
+    let result = fetch_account_usage(org_id, auth_method, cached_token.as_deref()).await;
+
+    // If expired and OAuth with a refresh token available, try refreshing
+    if result.is_err() && *auth_method == AuthMethod::OAuth {
+        if let Some(ref raw) = cached_token {
+            if let Some(refresh_tok) = oauth::extract_refresh_token(raw) {
+                eprintln!("[refresh] Attempting token refresh for {account_name}...");
+                if let Ok(refreshed) = oauth::refresh_access_token(&refresh_tok).await {
+                    let new_cred = oauth::update_credential_json(
+                        raw,
+                        &refreshed.access_token,
+                        refreshed.refresh_token.as_deref(),
+                        refreshed.expires_at,
+                    );
+                    eprintln!("[refresh] Token refreshed for {account_name}");
+
+                    // Tell the app to persist the new credential
+                    let _ = tx.send(Event::TokenRefreshed {
+                        account_name: account_name.to_string(),
+                        raw_credential: new_cred.clone(),
+                    });
+
+                    // Retry the fetch with the fresh token
+                    let retry = fetch_account_usage(org_id, auth_method, Some(&new_cred)).await;
+                    let _ = tx.send(Event::UsageResult {
+                        account_name: account_name.to_string(),
+                        result: retry,
+                    });
+                    return;
+                }
+                eprintln!("[refresh] Refresh failed for {account_name}");
+            }
+        }
+    }
+
+    let _ = tx.send(Event::UsageResult {
+        account_name: account_name.to_string(),
+        result,
+    });
 }
 
 /// Shared fetch logic. Uses cached token from memory — no keychain reads.
@@ -105,22 +146,52 @@ pub fn spawn_oauth_import(tx: &mpsc::UnboundedSender<Event>) {
 }
 
 async fn do_oauth_import() -> anyhow::Result<Vec<crate::event::OAuthImportData>> {
-    // Read all Claude Code access tokens from macOS Keychain
+    // Read all Claude Code raw credentials from macOS Keychain
     // (default + alternate config-directory instances)
-    let tokens = oauth::read_all_claude_code_tokens()?;
+    let credentials = oauth::read_all_claude_code_credentials()?;
 
     let mut results = Vec::new();
-    for access_token in tokens {
+    for raw_credential in credentials {
+        let access_token = oauth::normalize_stored_token(&raw_credential);
+
+        // Try profile with current access token
         match oauth::fetch_profile(&access_token).await {
             Ok(profile) => {
                 results.push(crate::event::OAuthImportData {
                     name: profile.email,
                     org_id: profile.org_id,
-                    access_token,
+                    raw_credential,
                 });
+                continue;
             }
-            Err(_) => continue, // skip tokens with expired/invalid profiles
+            Err(_) => {}
         }
+
+        // Access token expired — try refreshing before giving up
+        if let Some(refresh_tok) = oauth::extract_refresh_token(&raw_credential) {
+            eprintln!("[import] Access token expired, attempting refresh...");
+            if let Ok(refreshed) = oauth::refresh_access_token(&refresh_tok).await {
+                let new_cred = oauth::update_credential_json(
+                    &raw_credential,
+                    &refreshed.access_token,
+                    refreshed.refresh_token.as_deref(),
+                    refreshed.expires_at,
+                );
+                match oauth::fetch_profile(&refreshed.access_token).await {
+                    Ok(profile) => {
+                        eprintln!("[import] Refreshed token for {}", profile.email);
+                        results.push(crate::event::OAuthImportData {
+                            name: profile.email,
+                            org_id: profile.org_id,
+                            raw_credential: new_cred,
+                        });
+                        continue;
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+        // Both access and refresh failed — skip this credential
     }
 
     if results.is_empty() {
@@ -129,6 +200,126 @@ async fn do_oauth_import() -> anyhow::Result<Vec<crate::event::OAuthImportData>>
         ));
     }
     Ok(results)
+}
+
+/// Start an independent OAuth login flow. Opens the browser, captures the callback,
+/// exchanges the code for tokens, and identifies the account.
+pub fn spawn_oauth_login(tx: &mpsc::UnboundedSender<Event>) {
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = do_oauth_login().await;
+        let _ = tx.send(Event::OAuthLoginResult {
+            result: result.map_err(|e| format!("{e:#}")),
+        });
+    });
+}
+
+async fn do_oauth_login() -> anyhow::Result<crate::event::OAuthImportData> {
+    use anthropic_auth::run_callback_server;
+
+    const CALLBACK_PORT: u16 = 1455;
+    const REDIRECT_URI: &str = "http://localhost:1455/callback";
+
+    // Generate PKCE challenge
+    let (challenge, verifier) = oauth2::PkceCodeChallenge::new_random_sha256();
+    let state = oauth::generate_random_state();
+
+    // Build authorization URL with localhost redirect
+    let mut auth_url = url::Url::parse("https://claude.ai/oauth/authorize")?;
+    auth_url.query_pairs_mut()
+        .append_pair("client_id", oauth::CLIENT_ID)
+        .append_pair("response_type", "code")
+        .append_pair("redirect_uri", REDIRECT_URI)
+        .append_pair("scope", "user:profile user:inference")
+        .append_pair("code_challenge", challenge.as_str())
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("state", &state);
+
+    // Start callback server BEFORE opening browser
+    let expected_state = state.clone();
+    let callback_future = run_callback_server(CALLBACK_PORT, &expected_state);
+
+    // Use a temporary Chrome profile so each login gets a completely isolated session
+    let tmp_profile = std::env::temp_dir().join(format!("claude-tracker-login-{}", &state[..8]));
+    eprintln!("[login] Opening browser with temp profile: {}", tmp_profile.display());
+    let _opened = std::process::Command::new("open")
+        .args([
+            "-na", "Google Chrome", "--args",
+            &format!("--user-data-dir={}", tmp_profile.display()),
+            "--no-first-run",
+            "--no-default-browser-check",
+            auth_url.as_str(),
+        ])
+        .spawn()
+        .or_else(|_| {
+            std::process::Command::new("open").arg(auth_url.as_str()).spawn()
+        })
+        .map_err(|e| anyhow::anyhow!("Failed to open browser: {e}"))?;
+
+    // Wait for the callback (user authenticates in browser, Anthropic redirects to localhost)
+    let callback = callback_future
+        .await
+        .map_err(|e| anyhow::anyhow!("Login callback failed: {e}"))?;
+
+    eprintln!("[login] Callback received, exchanging code for tokens...");
+
+    // Exchange authorization code for tokens
+    let client = http_client();
+    let resp = client
+        .post("https://api.anthropic.com/v1/oauth/token")
+        .json(&serde_json::json!({
+            "grant_type": "authorization_code",
+            "code": callback.code,
+            "state": callback.state,
+            "client_id": oauth::CLIENT_ID,
+            "redirect_uri": REDIRECT_URI,
+            "code_verifier": verifier.secret(),
+        }))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        eprintln!("[login] Token exchange failed: HTTP {status} | body: {body}");
+        return Err(anyhow::anyhow!("Token exchange failed: HTTP {status}"));
+    }
+
+    let token_json: serde_json::Value = resp.json().await?;
+    let access_token = token_json["access_token"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing access_token in response"))?;
+    let refresh_token = token_json["refresh_token"]
+        .as_str()
+        .unwrap_or_default();
+    let expires_in = token_json["expires_in"]
+        .as_i64()
+        .unwrap_or(28800);
+    let expires_at = chrono::Utc::now().timestamp_millis() + (expires_in * 1000);
+
+    eprintln!("[login] Token obtained, identifying account...");
+
+    // Identify the account
+    let profile = oauth::fetch_profile(access_token).await?;
+
+    // Build credential JSON (compatible with existing storage format)
+    let raw_credential = serde_json::json!({
+        "claudeAiOauth": {
+            "accessToken": access_token,
+            "refreshToken": refresh_token,
+            "expiresAt": expires_at,
+        }
+    })
+    .to_string();
+
+    eprintln!("[login] Logged in as {}", profile.email);
+
+    Ok(crate::event::OAuthImportData {
+        name: profile.email,
+        org_id: profile.org_id,
+        raw_credential,
+    })
 }
 
 /// Detect which account matches the token currently in Claude Code's keychain.
@@ -183,8 +374,30 @@ async fn fetch_usage_session_key(session_key: &str, org_id: &str) -> anyhow::Res
         .header("Referer", "https://claude.ai/")
         .timeout(Duration::from_secs(10))
         .send()
-        .await?
-        .error_for_status()?;
+        .await?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let body = resp.text().await.unwrap_or_default();
+        eprintln!(
+            "[session/usage] HTTP {status} | retry-after: {} | body: {}",
+            retry_after.as_deref().unwrap_or("none"),
+            &body[..body.len().min(500)],
+        );
+        return Err(anyhow::anyhow!(
+            "HTTP {} {}{}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or(""),
+            retry_after
+                .map(|r| format!(" (retry-after: {r})"))
+                .unwrap_or_default()
+        ));
+    }
 
     let body: serde_json::Value = resp.json().await?;
 

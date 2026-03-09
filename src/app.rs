@@ -272,8 +272,8 @@ impl AppState {
     /// already exists, update its credentials. Otherwise, add a new account.
     /// Returns the account index on success.
     pub fn import_oauth_account(&mut self, data: OAuthImportData) -> Option<usize> {
-        // Store just the access token in our keyring
-        if let Err(e) = self.keyring.set_session_key(&data.name, &data.access_token) {
+        // Store the full credential JSON (includes refresh token) in our keyring
+        if let Err(e) = self.keyring.set_session_key(&data.name, &data.raw_credential) {
             self.set_status(format!("Keyring error: {e}"));
             return None;
         }
@@ -282,7 +282,7 @@ impl AppState {
         if let Some(pos) = self.accounts.iter().position(|a| a.config.name == data.name) {
             self.accounts[pos].config.org_id = data.org_id;
             self.accounts[pos].config.auth_method = AuthMethod::OAuth;
-            self.accounts[pos].cached_token = Some(data.access_token);
+            self.accounts[pos].cached_token = Some(data.raw_credential);
             self.accounts[pos].usage = None;
             self.accounts[pos].status = AccountStatus::Idle;
             self.save_config();
@@ -301,11 +301,26 @@ impl AppState {
             usage: None,
             status: AccountStatus::Idle,
             last_fetched: None,
-            cached_token: Some(data.access_token),
+            cached_token: Some(data.raw_credential),
         });
         self.save_config();
         self.set_status(format!("Imported OAuth account '{}'", data.name));
         Some(self.accounts.len() - 1)
+    }
+
+    /// Update cached credential after a successful token refresh.
+    pub fn apply_token_refresh(&mut self, account_name: &str, raw_credential: String) {
+        if let Some(account) = self
+            .accounts
+            .iter_mut()
+            .find(|a| a.config.name == account_name)
+        {
+            // Persist to keyring
+            if let Err(e) = self.keyring.set_session_key(account_name, &raw_credential) {
+                eprintln!("[refresh] Failed to persist refreshed token: {e}");
+            }
+            account.cached_token = Some(raw_credential);
+        }
     }
 
     fn swap_to_selected(&mut self) {
@@ -392,6 +407,10 @@ fn handle_normal_key(
         KeyCode::Char('i') => {
             crate::api::spawn_oauth_import(tx);
             app.set_status("Importing from Claude Code...".to_string());
+        }
+        KeyCode::Char('L') => {
+            crate::api::spawn_oauth_login(tx);
+            app.set_status("Opening browser — log in to add account...".to_string());
         }
         KeyCode::Char('?') => {
             app.mode = AppMode::Help;
@@ -1032,7 +1051,7 @@ mod tests {
         let import_data = OAuthImportData {
             name: "Alice".to_string(),
             org_id: "org-Alice".to_string(),
-            access_token: "fresh-token-xyz".to_string(),
+            raw_credential: "fresh-token-xyz".to_string(),
         };
         app.import_oauth_account(import_data);
 
